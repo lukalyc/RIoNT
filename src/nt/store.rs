@@ -1,4 +1,4 @@
-//! In-memory topic store: names, metadata, live values, timing/Hz, history.
+//! In-memory topic store: names, metadata, live values, timing/Hz.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
@@ -92,7 +92,7 @@ impl NtValue {
         }
     }
 
-    /// Compact single-line rendering for the tree/watchlist.
+    /// Compact single-line rendering for the tree/inspector.
     pub fn format(&self) -> String {
         match self {
             NtValue::Boolean(b) => b.to_string(),
@@ -125,16 +125,6 @@ impl NtValue {
             NtValue::Raw(b) => format!("<{} bytes>", b.len()),
         }
     }
-
-    /// Numeric projection for sparklines, if any.
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            NtValue::Double(f) => Some(*f),
-            NtValue::Int(i) => Some(*i as f64),
-            NtValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            _ => None,
-        }
-    }
 }
 
 /// One topic + its live stream metadata.
@@ -153,12 +143,9 @@ pub struct TopicData {
     pub last_server_ts: Option<u64>,
     /// Recent update instants (pruned to ~2s) for Hz estimation.
     hz_samples: VecDeque<Instant>,
-    /// Rolling numeric history for sparklines.
-    pub history: VecDeque<f64>,
 }
 
 const HZ_WINDOW: f64 = 2.0;
-const HISTORY_CAP: usize = 120;
 
 impl TopicData {
     fn new(name: String) -> Self {
@@ -173,7 +160,6 @@ impl TopicData {
             last_update: None,
             last_server_ts: None,
             hz_samples: VecDeque::new(),
-            history: VecDeque::new(),
         }
     }
 
@@ -189,12 +175,6 @@ impl TopicData {
         let cutoff = now - std::time::Duration::from_secs_f64(HZ_WINDOW);
         while self.hz_samples.front().is_some_and(|t| *t < cutoff) {
             self.hz_samples.pop_front();
-        }
-        if let Some(f) = v.as_f64() {
-            if self.history.len() >= HISTORY_CAP {
-                self.history.pop_front();
-            }
-            self.history.push_back(f);
         }
     }
 
@@ -240,25 +220,5 @@ impl Store {
         let mut names: Vec<String> = self.topics.keys().cloned().collect();
         names.sort_unstable();
         names
-    }
-
-    /// Snapshot of every current value, stringified (for the diff view).
-    pub fn snapshot(&self) -> HashMap<String, String> {
-        self.topics
-            .iter()
-            .filter_map(|(name, t)| {
-                t.current
-                    .as_ref()
-                    .map(|v| (name.clone(), v.format()))
-            })
-            .collect()
-    }
-
-    /// Summed publish rate across all topics (connection health indicator).
-    pub fn total_hz(&self) -> f64 {
-        self.topics
-            .values()
-            .filter_map(|t| t.hz())
-            .sum()
     }
 }

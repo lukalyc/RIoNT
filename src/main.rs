@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod nt;
 mod ui;
 
@@ -14,21 +15,21 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
-/// CLI: `nt-tui 9986` (team number) or `nt-tui 172.22.11.2` (direct IP).
+/// CLI: `riont 9986` (team number) or `riont 172.22.11.2` (direct IP).
 #[derive(clap::Parser)]
-#[command(name = "nt-tui", version, about = "Fast keyboard-only NetworkTables inspector")]
+#[command(name = "riont", version, about = "RIONT — Robot Inspection Over Network Tables")]
 struct Cli {
     /// Team number, IP, or IP:port. Falls back to common tether addresses.
     target: Option<String>,
 }
 
 pub(crate) fn trace(msg: &str) {
-    if std::env::var("NT_TUI_TRACE").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("RIONT_TRACE").map(|v| v == "1").unwrap_or(false) {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("nt-tui-trace.log")
+            .open("riont-trace.log")
         {
             let _ = writeln!(f, "{}", msg);
         }
@@ -39,25 +40,14 @@ fn resolve_target(arg: Option<String>) -> String {
     match arg {
         Some(t) => crate::app::resolve_target(&t),
         // No argument: fall back to the last successfully connected target
-        // (remembers your robot between runs), then the USB tether address.
-        None => load_last_target().unwrap_or_else(|| "172.22.11.2".into()),
+        // (config.json), then the USB tether address.
+        None => {
+            let (config, _) = config::Config::load();
+            config
+                .last_target
+                .unwrap_or_else(|| "172.22.11.2".into())
+        }
     }
-}
-
-/// Small sidecar file remembering the last target we connected to.
-fn last_target_path() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_default().join(".nt-tui-target")
-}
-
-fn load_last_target() -> Option<String> {
-    std::fs::read_to_string(last_target_path())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn save_last_target(target: &str) {
-    let _ = std::fs::write(last_target_path(), target);
 }
 
 fn main() -> anyhow::Result<()> {
@@ -83,10 +73,10 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
 
     // Headless test mode: fixed viewport, keystroke script on stdin, ANSI
     // render on stdout. No console APIs required.
-    let headless = std::env::var("NT_TUI_HEADLESS").map(|v| v == "1").unwrap_or(false);
+    let headless = std::env::var("RIONT_HEADLESS").map(|v| v == "1").unwrap_or(false);
 
     let (mut terminal, mut key_rx, key_tx_closed) = if headless {
-        let (w, h) = std::env::var("NT_TUI_SIZE")
+        let (w, h) = std::env::var("RIONT_SIZE")
             .ok()
             .and_then(|s| {
                 let mut it = s.split('x');
@@ -204,10 +194,15 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         UiAction::Client(cmd) => {
                             cmd_tx.send(cmd).ok();
                         }
+                        UiAction::OpenEditor(path) => {
+                            if let Err(e) = run_editor(&path, &mut terminal, headless) {
+                                app.toast(app::ToastKind::Error, format!("editor: {}", e));
+                            }
+                        }
                         UiAction::None => {}
                     }
                 }
-                trace(&format!("mode-after {:?} query {:?} matches {} cursor {}", app.mode, app.query, app.search_matches.len(), app.search_cursor));
+                trace(&format!("mode-after {:?} query {:?}", app.mode, app.query));
             }
             // network updates
             Some(update) = update_rx.recv() => {
@@ -216,16 +211,18 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         app.retry_attempt = attempt;
                         app.connecting = true;
                         app.connected = false;
-                        // After a disconnect, keep the (more informative)
-                        // disconnected status visible while reconnecting.
-                        if app.disconnect_reason.is_none() {
-                            app.status_kind = crate::app::StatusKind::Info;
-                            app.status = format!("connecting to {}...", target);
-                        }
+                        // After a disconnect, the DISCONNECTED state in the
+                        // HUD stays up while the client retries.
+                        let _ = target;
                     }
                     NtUpdate::Connected { server_info } => {
                         app.set_connected(server_info);
-                        save_last_target(&target);
+                        // Remember the target in config.json for the next
+                        // run (Connection Picker MRU ordering).
+                        app.config.last_target = Some(target.clone());
+                        if let Err(e) = app.config.save() {
+                            app.toast(app::ToastKind::Warn, format!("save config: {}", e));
+                        }
                     }
                     NtUpdate::Disconnected(reason) => app.set_disconnected(reason),
                     NtUpdate::Values(batch) => {
@@ -250,18 +247,18 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     NtUpdate::TopicRemoved(name) => {
                         app.store.topics.remove(&name);
                     }
-                    NtUpdate::Rtt(rtt) => app.rtt_ms = Some(rtt),
-                    NtUpdate::ClockOffset(off) => app.clock_offset_us = Some(off),
+                    NtUpdate::Toast { kind, msg } => app.toast(kind, msg),
+                    // Per-topic RTT/clock measurements stay inside the client
+                    // (needed for clock-synced publishes); the HUD is
+                    // driver-station style and does not surface them.
+                    NtUpdate::Rtt(_) | NtUpdate::ClockOffset(_) => {}
                 }
             }
             // tick
             _ = tick.tick() => {
-                // Grid columns track the terminal width (~34 cols per card).
-                if let Ok(sz) = terminal.size() {
-                    app.grid_cols = ((sz.width as usize) / 34).clamp(1, 4);
-                }
+                app.prune_toasts();
                 if last_draw.elapsed() >= Duration::from_millis(8) {
-                    trace(&format!("draw query={:?} mode={:?} topics={}", app.query, app.mode, app.store.topics.len()));
+                    trace(&format!("draw mode={:?} topics={}", app.mode, app.store.topics.len()));
                     // Every 500 ms force a full repaint: ratatui only emits
                     // changed cells, so this keeps the screen honest if a
                     // terminal glitches, and guarantees a heartbeat.
@@ -270,11 +267,7 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         last_forced_repaint = Instant::now();
                     }
                     terminal.draw(|f| {
-                        ui::draw(f, &app);
-                        let s: String = (0..40u16)
-                            .filter_map(|x| f.buffer_mut()[(x, 13)].symbol().chars().next())
-                            .collect();
-                        trace(&format!("rendered[13]={:?}", s));
+                        ui::draw(f, &mut app);
                     })?;
                     last_draw = Instant::now();
                 }
@@ -289,4 +282,38 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
         stdout().execute(LeaveAlternateScreen)?;
     }
     result
+}
+
+/// Suspend the TUI, open `path` in the user's editor ($VISUAL / $EDITOR,
+/// falling back to notepad on Windows / vi elsewhere), then restore the
+/// terminal. Blocking by design: the user is editing the config.
+fn run_editor(
+    path: &std::path::Path,
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    headless: bool,
+) -> anyhow::Result<()> {
+    if headless {
+        return Ok(()); // test mode: no interactive editor
+    }
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "vi".into()
+            }
+        });
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    let status = std::process::Command::new(&editor)
+        .arg(path)
+        .status()
+        .map_err(|e| anyhow::anyhow!("launch {}: {}", editor, e));
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    status?;
+    Ok(())
 }

@@ -57,8 +57,17 @@ pub enum NtUpdate {
     },
     /// Topic deleted on the server.
     TopicRemoved(String),
+    /// Background job result from the client task (e.g. SSH restart).
+    Toast {
+        kind: crate::app::ToastKind,
+        msg: String,
+    },
+    // The client measures these for clock-synced publishes; the v0.2.0
+    // driver-station HUD intentionally does not surface raw rtt/offset.
+    #[allow(dead_code)]
     /// Round trip time in ms.
     Rtt(f64),
+    #[allow(dead_code)]
     /// Best estimate of (server_time - local_epoch_time) in us.
     ClockOffset(f64),
 }
@@ -68,10 +77,12 @@ pub enum NtUpdate {
 pub enum ClientCommand {
     /// Publish a value to a topic (declares the topic if needed).
     Publish { topic: String, value: NtValue },
-    /// Drop the socket and reconnect.
+    /// Drop the socket and reconnect (pure client action: no NT queries).
     Reconnect,
     /// Drop the socket and connect to a different target instead.
     Retarget(String),
+    /// Dispatch a background SSH command that restarts the robot code.
+    RestartRobotCode { host: String, user: String, cmd: String },
 }
 
 pub fn channel() -> (UnboundedSender<NtUpdate>, UnboundedReceiver<NtUpdate>) {
@@ -90,15 +101,74 @@ fn local_us() -> u64 {
         .as_micros() as u64
 }
 
+/// Fire-and-forget SSH restart of the robot user code. Runs entirely in a
+/// background task; the outcome lands back in the UI as a toast. Never
+/// touches NetworkTables — the command comes straight from config.json
+/// (`system.ssh_user` + `system.restart_cmd`).
+fn spawn_restart(
+    updates: &UnboundedSender<NtUpdate>,
+    host: String,
+    user: String,
+    cmd: String,
+) {
+    let updates = updates.clone();
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let output = tokio::process::Command::new("ssh")
+            // tokio's output() leaves stdin INHERITED (unlike std), which
+            // would hand the TUI's keystroke pipe to ssh and hang it.
+            .stdin(std::process::Stdio::null())
+            .arg("-o")
+            .arg("ConnectTimeout=5")
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=no")
+            .arg(format!("{}@{}", user, host))
+            .arg(&cmd)
+            .output()
+            .await;
+        let elapsed = started.elapsed().as_secs_f32();
+        match output {
+            Ok(out) if out.status.success() => {
+                updates
+                    .send(NtUpdate::Toast {
+                        kind: crate::app::ToastKind::Success,
+                        msg: format!("robot code restarted in {:.2}s", elapsed),
+                    })
+                    .ok();
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let detail = stderr.lines().last().unwrap_or("ssh failed").trim().to_string();
+                updates
+                    .send(NtUpdate::Toast {
+                        kind: crate::app::ToastKind::Error,
+                        msg: format!("restart failed: {}", detail),
+                    })
+                    .ok();
+            }
+            Err(e) => {
+                updates
+                    .send(NtUpdate::Toast {
+                        kind: crate::app::ToastKind::Error,
+                        msg: format!("restart: ssh unavailable ({})", e),
+                    })
+                    .ok();
+            }
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
-// debug logging (NT_TUI_DEBUG=1)
+// debug logging (RIONT_DEBUG=1)
 // ---------------------------------------------------------------------------
 
 type DebugLog = Option<std::io::BufWriter<std::fs::File>>;
 
 fn open_debug_log() -> DebugLog {
-    if std::env::var("NT_TUI_DEBUG").map(|v| v == "1").unwrap_or(false) {
-        std::fs::File::create("nt-tui-debug.log")
+    if std::env::var("RIONT_DEBUG").map(|v| v == "1").unwrap_or(false) {
+        std::fs::File::create("riont-debug.log")
             .ok()
             .map(std::io::BufWriter::new)
     } else {
@@ -152,9 +222,10 @@ pub async fn run_client(
             Ok(reason) => reason,
             Err(e) => e.to_string(),
         };
-        // A deliberate retarget or manual reconnect is not a disconnect;
-        // don't report them as one so the UI's status stays up.
-        if reason != "retarget" && reason != "reconnect requested" {
+        // A deliberate retarget, manual reconnect, or restart-during-connect
+        // is not a disconnect; don't report them as one so the UI's HUD
+        // state stays up.
+        if reason != "retarget" && reason != "reconnect requested" && reason != "restart during connect" {
             updates.send(NtUpdate::Disconnected(reason)).ok();
         }
         tokio::select! {
@@ -162,6 +233,11 @@ pub async fn run_client(
             Some(cmd) = commands.recv() => match cmd {
                 ClientCommand::Reconnect => {}
                 ClientCommand::Retarget(t) => *retarget_to.lock().unwrap() = Some(t),
+                // Restart works even while disconnected (SSH does not need
+                // the NT link).
+                ClientCommand::RestartRobotCode { host, user, cmd } => {
+                    spawn_restart(&updates, host, user, cmd);
+                }
                 // A publish that lands in the backoff window must not be
                 // lost: re-queue it for the next session.
                 pub_cmd @ ClientCommand::Publish { .. } => {
@@ -187,9 +263,10 @@ async fn session(
     retarget_to: &Arc<Mutex<Option<String>>>,
 ) -> Result<String, String> {
     let mut debug_log = open_debug_log();
+    debug_msg(&mut debug_log, &format!("session start: {}", target));
 
     // NOTE: the NT4 WebSocket is served at /nt/<client-name>.
-    let url = format!("ws://{}/nt/nt-tui", target);
+    let url = format!("ws://{}/nt/riont", target);
     let mut request = url
         .into_client_request()
         .map_err(|e| format!("bad request: {}", e))?;
@@ -213,6 +290,12 @@ async fn session(
             ClientCommand::Retarget(t) => {
                 *retarget_to.lock().unwrap() = Some(t);
                 return Err("retarget".into());
+            }
+            // SSH restart does not need the NT link: fire it. Aborting the
+            // in-flight handshake is fine — the outer loop reconnects.
+            ClientCommand::RestartRobotCode { host, user, cmd } => {
+                spawn_restart(updates, host, user, cmd);
+                return Err("restart during connect".into());
             }
             pub_cmd @ ClientCommand::Publish { .. } => {
                 commands_tx.send(pub_cmd).ok();
@@ -346,6 +429,9 @@ async fn session(
                         *retarget_to.lock().unwrap() = Some(t);
                         break "retarget".into();
                     }
+                    ClientCommand::RestartRobotCode { host, user, cmd } => {
+                        spawn_restart(updates, host, user, cmd);
+                    }
                     ClientCommand::Publish { topic, value } => {
                         // Wire-format topic names are absolute.
                         let wire_topic = if topic.starts_with('/') {
@@ -422,7 +508,7 @@ fn handle_text(
     _buf_values: &mut Vec<(String, NtValue, u64)>,
     updates: &UnboundedSender<NtUpdate>,
     log: &mut DebugLog,
-    pending: &mut Vec<Pending>,
+    _pending: &mut Vec<Pending>,
 ) -> Result<(), String> {
     let msgs: serde_json::Value = serde_json::from_str(t).map_err(|e| e.to_string())?;
     let items: Vec<serde_json::Value> = if msgs.is_array() {

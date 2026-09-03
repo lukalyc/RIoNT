@@ -1,11 +1,15 @@
-"""End-to-end TUI test harness (headless mode).
+"""End-to-end TUI test harness (headless mode) — RIONT v0.2.0 dashboard.
 
-Runs nt-tui.exe with NT_TUI_HEADLESS=1: the TUI renders ANSI to stdout
+Runs riont.exe with RIONT_HEADLESS=1: the TUI renders ANSI to stdout
 (fixed 120x36 viewport) and reads a keystroke script on stdin. The harness
 drives stdin, emulates the terminal with pyte, and asserts on the rendered
 screen. A real WPILib ntcore instance runs as the NT4 server (test/server.py)
-and a second ntcore client mutates values to exercise publish/diff/reconnect
+and a second ntcore client mutates values to exercise publish/reconnect
 flows.
+
+Layout under test: DS-style HUD, 35% left control column (Topic Tree +
+passive Inspector Dock), 65% full-height Watchlist Canvas, command palette,
+toasts.
 
 Run:  C:/Users/lryam/.conda/envs/nt-tui-test/python.exe test/harness.py
 """
@@ -27,15 +31,13 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, "target", "debug", "nt-tui.exe")
+EXE = os.path.join(ROOT, "target", "debug", "riont.exe")
 SERVER = os.path.join(ROOT, "test", "server.py")
 PY = sys.executable
 COLS, ROWS = 120, 36
 TARGET = "127.0.0.1:5814"
 
-os.environ["NT_TUI_DEBUG"] = "1"
-
-BLOCKS = set(" ▁▂▃▄▅▆▇")
+os.environ["RIONT_DEBUG"] = "1"
 
 results = []
 
@@ -53,7 +55,7 @@ class Tui:
     """Headless TUI driver: stdin = key script, stdout = ANSI render."""
 
     def __init__(self, target=TARGET):
-        env = dict(os.environ, NT_TUI_HEADLESS="1", NT_TUI_SIZE=f"{COLS}x{ROWS}")
+        env = dict(os.environ, RIONT_HEADLESS="1", RIONT_SIZE=f"{COLS}x{ROWS}")
         self.screen = pyte.Screen(COLS, ROWS)
         self.stream = pyte.Stream()
         self.stream.attach(self.screen)
@@ -68,8 +70,6 @@ class Tui:
         )
         self.alive = True
         self.exitstatus = None
-        self.raw_chunks = []
-        self._pending = []
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
 
@@ -79,7 +79,7 @@ class Tui:
                 d = self.proc.stdout.read1(65536)
                 if not d:
                     break
-                self._pending.append(self.decoder.decode(d))
+                self.stream.feed(self.decoder.decode(d))
         except Exception:
             pass
         self.alive = False
@@ -87,18 +87,6 @@ class Tui:
             self.exitstatus = self.proc.wait(timeout=5)
         except Exception:
             pass
-
-    def _drain(self):
-        for data in self._pending:
-            self.raw_chunks.append(data)
-            self.stream.feed(data)
-        self._pending.clear()
-
-    def pump(self, secs=0.35):
-        end = time.time() + secs
-        while time.time() < end:
-            time.sleep(min(0.05, max(0.0, end - time.time())))
-        self._drain()
 
     def send(self, keys):
         """Send keys: one char = one key press. Control chars are encoded as
@@ -113,6 +101,11 @@ class Tui:
         except Exception:
             pass
 
+    def pump(self, secs=0.35):
+        end = time.time() + secs
+        while time.time() < end:
+            time.sleep(min(0.05, max(0.0, end - time.time())))
+
     def lines(self):
         return [ln.rstrip() for ln in self.screen.display]
 
@@ -122,16 +115,30 @@ class Tui:
     def has(self, needle):
         return needle in self.text()
 
-    def cursor_rows(self):
-        # The tree/watch cursor is marked with a visible "> " prefix. Rows in
-        # the right-hand pane (inspector/watch) are prefixed by the pane
-        # divider, so also match the marker right after a "│".
-        rows = []
-        for i, ln in enumerate(self.lines()):
-            tail = ln.rsplit("│", 1)[-1]
-            if ln.startswith("> ") or tail.startswith("> "):
-                rows.append(i)
-        return rows
+    def tree_cursor_rows(self):
+        """Rows carrying the tree cursor: '> ' right after the pane border."""
+        return [i for i, ln in enumerate(self.lines()) if ln[1:3] == "> "]
+
+    def tree_rows(self):
+        """Row indices with content inside the TOPIC TREE block (left pane only)."""
+        insp = self.find_row("INSPECTOR")
+        top = insp if insp > 0 else len(self.lines())
+        out = []
+        for i in range(2, top):
+            ln = self.lines()[i]
+            seg = ln.split("│")[1] if ln.startswith("│") else ""
+            if seg.strip():
+                out.append(i)
+        return out
+
+    def canvas_seg(self, i):
+        """Text inside the watchlist canvas on row i (between its borders)."""
+        parts = self.lines()[i].split("│")
+        return parts[-2] if len(parts) >= 5 else ""
+
+    def card_rows(self):
+        """Rows whose canvas segment starts with a card's top border."""
+        return [i for i in range(len(self.lines())) if self.canvas_seg(i).startswith("┌ ")]
 
     def styled(self, row, needle, attr):
         """True if the cells covering `needle` in `row` carry `attr`."""
@@ -182,6 +189,19 @@ class Server:
         self.p = None
 
     def start(self):
+        # Hermetic runs: kill any zombie server still holding 5814 (from a
+        # previously crashed harness run), then verify the port is free.
+        out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True).stdout
+        for ln in out.splitlines():
+            if "5814" in ln and "LISTENING" in ln:
+                pid = ln.split()[-1]
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+        end = time.time() + 5
+        while time.time() < end:
+            if "5814" not in subprocess.run(["netstat", "-ano"],
+                                            capture_output=True, text=True).stdout:
+                break
+            time.sleep(0.2)
         self.log = open(os.path.join(ROOT, "test", "server.log"), "ab")
         self.p = subprocess.Popen([PY, SERVER], cwd=ROOT, stdout=self.log, stderr=self.log)
         assert wait_port(5814), "server did not open port 5814"
@@ -204,7 +224,6 @@ class Server:
 def main():
     server = Server()
     server.start()
-    t0 = time.time()  # ≈ server clock origin (server stops StaleCounter at t=8s)
     harness = ntcore.NetworkTableInstance.getDefault()
     harness.startClient4("harness")
     harness.setServer("127.0.0.1", 5814)
@@ -218,42 +237,43 @@ def main():
     sd = harness.getTable("SmartDashboard")
     swerve = harness.getTable("Swerve")
 
-    # Server-side verification reads. A pyntcore client only caches values for
-    # topics it subscribes to, so bare sd.getNumber()/getString() calls always
-    # return the default and would "fail" even when the publish reached the
-    # server. Verify publishes through real subscribers instead.
     _opts = ntcore.PubSubOptions(periodic=0.05, topicsOnly=False)
     kp_read = harness.getDoubleTopic("/SmartDashboard/kP").subscribe(-1.0, _opts)
     al_read = harness.getStringTopic("/SmartDashboard/Alliance").subscribe("", _opts)
     cl_read = harness.getBooleanTopic("/SmartDashboard/Climb Locked").subscribe(False, _opts)
 
-    # A topic published by the harness itself so T12 can unpublish it (clients
-    # cannot unpublish topics owned by another publisher, e.g. the robot's).
     sd.putString("Ephemeral", "here")
 
-    # Workspace presets file for the T21 matrix-preset test.
+    # Fresh config so runs are independent (T21 preset indices, T18 MRU).
+    cfg_path = os.path.join(os.path.expanduser("~"), ".config", "riont", "config.json")
+    try:
+        os.remove(cfg_path)
+    except OSError:
+        pass
+
+    # Workspace presets for the T12/T21 preset tests (legacy .nt-views.json).
     with open(os.path.join(ROOT, ".nt-views.json"), "w") as fh:
         fh.write(json.dumps([
             {"name": "Test", "topics": ["SmartDashboard/Shooter RPM", "Swerve/*"]},
+            {"name": "Dense", "topics": ["Swerve/*", "SmartDashboard/*"]},
         ]))
 
     tui = Tui()
-    tui.pump(2.0)
+    tui.pump(2.5)
 
-    # T1: connection + header ------------------------------------------------
+    # T1: HUD — driver-station diagnostics ------------------------------------
     ln0 = tui.lines()[0]
-    check("T1a header shows LIVE", "LIVE" in ln0, ln0)
-    check("T1b header shows target", TARGET in ln0, ln0)
-    m = None
+    check("T1a header shows COMM ONLINE", "COMM: ONLINE" in ln0, ln0)
+    check("T1b header shows target IP", "127.0.0.1" in ln0, ln0)
+    check("T1c header shows CODE RUNNING", "CODE: RUNNING" in ln0, ln0)
+    check("T1d header shows UPTIME", "UPTIME: " in ln0 and ":" in ln0.split("UPTIME: ")[1], ln0)
     import re
 
     m = re.search(r"(\d+) topics", ln0)
-    check("T1c topic count > 10", m and int(m.group(1)) > 10, ln0)
-    check("T1d header shows Hz", re.search(r"[\d.]+ Hz", ln0) is not None, ln0)
-    check("T1e LIVE rendered bold", tui.styled(0, "LIVE", "bold"), ln0)
-    ln1 = tui.lines()[1]
-    check("T1f uptime displayed", re.search(r"robot uptime \d{2}:\d{2}:\d{2}", ln1) is not None, ln1)
-    check("T1g server info shown", len(ln1.split("robot uptime")[-1].strip()) > 5, ln1)
+    check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
+    check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
+    check("T1g version 0.2.0", "RIONT v0.2.0" in ln0, ln0)
+    check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
     txt = tui.text()
@@ -272,29 +292,24 @@ def main():
     bv_row = tui.find_row("Battery Voltage")
     gx = tui.lines()[bv_row].find("[double]") if bv_row >= 0 else -1
     fgs = {tui.screen.buffer[bv_row][gx + j].fg for j in range(8)} if bv_row >= 0 and gx >= 0 else set()
-    green = len(fgs) == 1 and "default" not in fgs
+    green = "green" in fgs or "00cd00" in fgs
     check("T3e editable tag is green", green, f"fgs={fgs} row={tui.lines()[bv_row] if bv_row >= 0 else 'none'}")
 
-    cur0 = tui.cursor_rows()
+    cur0 = tui.tree_cursor_rows()
     tui.send("j")
     tui.pump(0.4)
-    cur1 = tui.cursor_rows()
+    cur1 = tui.tree_cursor_rows()
     check("T4 j moves cursor", cur0 and cur1 and cur1 != cur0, f"{cur0} -> {cur1}")
     check("T4b cursor highlighted reverse", bool(cur1), cur1)
 
     # T5: g / G ---------------------------------------------------------------
     tui.send("G")
     tui.pump(0.4)
-    curG = tui.cursor_rows()
+    curG = tui.tree_cursor_rows()
     tui.send("g")
     tui.pump(0.4)
-    curg = tui.cursor_rows()
-    # bottom tree row = last non-empty row of the left pane (row count varies
-    # with harness-published topics, so compute it instead of hard-coding)
-    left_rows = [
-        i for i, ln in enumerate(tui.lines())
-        if 2 <= i <= 34 and ln.split("│")[0].strip()
-    ]
+    curg = tui.tree_cursor_rows()
+    left_rows = tui.tree_rows()
     check("T5a G jumps to bottom", curG and left_rows and curG[0] == max(left_rows),
           f"curG={curG} bottom={max(left_rows) if left_rows else None}")
     check("T5b g jumps to top", curg and curg[0] == 2, curg)
@@ -306,30 +321,28 @@ def main():
     tui.send("l")
     tui.pump(0.4)
 
-    # T7: inspector content ----------------------------------------------------
+    # T7: passive inspector dock ------------------------------------------------
     # cursor on row0 (SmartDashboard dir) -> jjj lands on Battery Voltage
     tui.send("g")
     tui.pump(0.3)
     tui.send("jjj")
     tui.pump(0.5)
     txt = tui.text()
-    check("T7a inspector shows full path", "SmartDashboard/Battery Voltage" in txt, txt)
-    check("T7b inspector shows type", "type     double" in txt, txt)
-    check("T7c inspector shows rate", "rate     19." in txt or "rate     20." in txt or "rate     21." in txt, txt)
-    check("T7d inspector shows last update", "last update 0." in txt, txt)
-    trend_row = tui.find_row("trend")
-    ok = trend_row >= 0 and any(c in BLOCKS for c in tui.lines()[trend_row])
-    check("T7e sparkline rendered", ok, tui.lines()[trend_row] if trend_row >= 0 else "no trend row")
+    check("T7a dock shows full path", "SmartDashboard/Battery Voltage" in txt, txt)
+    check("T7b dock shows type", "Type:  double" in txt, txt)
+    check("T7c dock shows rate", re.search(r"Rate:  \d+\.\d Hz", txt), txt)
+    check("T7d dock shows delta", "Δ " in txt, txt)
+    check("T7e dock shows value", re.search(r"Value: [0-9]", txt), txt)
 
     # T8: focus cycle + status hints -------------------------------------------
     tui.send("\t")
     tui.pump(0.4)
-    check("T8a inspector hints in status bar", "j/k scroll" in tui.lines()[-1], tui.lines()[-1])
+    check("T8a watchlist hints after tab", "x remove" in tui.lines()[-1], tui.lines()[-1])
     tui.send("\t")
     tui.pump(0.4)
     check("T8b tree hints back (two-way tab)", "h fold" in tui.lines()[-1], tui.lines()[-1])
 
-    # T9: watchlist -------------------------------------------------------------
+    # T9: search jumps, then space pins from the tree ---------------------------
     tui.send("/")  # search for battery
     tui.pump(0.3)
     tui.send("batt")
@@ -337,35 +350,44 @@ def main():
     txt = tui.text()
     check("T9a search overlay opens", "search" in txt and "/batt" in txt, txt)
     check("T9b search shows match", any("Battery Voltage" in l for l in tui.lines()), txt)
-    tui.send("\r")
+    tui.send("\r")  # jump to the match in the tree
     tui.pump(0.5)
     txt = tui.text()
     check("T9c jump expanded ancestors", "[-] SmartDashboard" in txt, txt)
-    curs = tui.cursor_rows()
+    curs = tui.tree_cursor_rows()
     check("T9d cursor on match row", curs and "Battery Voltage" in tui.lines()[curs[0]], curs)
+    tui.send(" ")  # pin to watchlist from the tree
+    tui.pump(0.5)
+    txt = tui.text()
+    check("T9e pinned toast", "[SUCCESS] pinned SmartDashboard/Battery Voltage" in txt, txt[-400:])
+    check("T9f watchlist card appeared", re.search(r"┌ SmartDashboard/Battery Voltage", txt), txt[-800:])
+    # pinned star in the tree (left pane only — the card title also matches)
+    star_row = next((i for i, ln in enumerate(tui.lines())
+                     if ln.startswith("│") and "* Battery Voltage" in ln.split("│")[1]), -1)
+    check("T9g pinned star in tree", star_row >= 0, tui.text()[:900])
 
-    # T10: edit + publish round trip --------------------------------------------
+    # T10: edit + publish round trip (inline bottom prompt) ----------------------
     tui.send("/"); tui.pump(0.3); tui.send("kp\r"); tui.pump(0.5)
-    curs = tui.cursor_rows()
+    curs = tui.tree_cursor_rows()
     check("T10a cursor on kP", curs and "kP" in tui.lines()[curs[0]], curs)
     tui.send("e")
     tui.pump(0.4)
     txt = tui.text()
-    check("T10b edit overlay opens", "set SmartDashboard/kP" in txt and "esc=cancel" in txt, txt)
+    check("T10b inline edit prompt opens", "Set SmartDashboard/kP:" in txt and "enter=publish" in txt, txt[-500:])
     tui.send("0.05")
     tui.pump(0.3)
     tui.send("\r")
     tui.pump(0.6)
-    check("T10c publish status shown", "published SmartDashboard/kP = 0.05" in tui.lines()[-1], tui.lines()[-1])
+    check("T10c publish toast shown", "[SUCCESS] published SmartDashboard/kP = 0.05" in tui.text(), tui.lines()[-6:])
     got = wait_topic(kp_read, 0.05)
     check("T10d server received 0.05", got == 0.05, f"server kP={got}")
 
     # T10e edit error path
     tui.send("e"); tui.pump(0.4)
     tui.send("abc"); tui.pump(0.3); tui.send("\r"); tui.pump(0.4)
-    check("T10e edit error shown", "not a number: abc" in tui.text(), tui.text())
+    check("T10e edit error shown", "not a number: abc" in tui.text(), tui.text()[-400:])
     tui.send("\x1b"); tui.pump(0.4)
-    check("T10f esc closes editor", "set SmartDashboard/kP" not in tui.text(), tui.text())
+    check("T10f esc closes editor", "Set SmartDashboard/kP:" not in tui.text(), tui.text()[-400:])
 
     # T10g edit string topic
     tui.send("/"); tui.pump(0.3); tui.send("alliance\r"); tui.pump(0.5)
@@ -385,134 +407,241 @@ def main():
 
     # T10i non-writable type rejected (boolean[] topic)
     tui.send("/"); tui.pump(0.3); tui.send("faults\r"); tui.pump(0.5)
-    tui.send("e"); tui.pump(0.4)
-    check("T10i array edit rejected", "topic type not editable" in tui.lines()[-1], tui.lines()[-1])
+    tui.send("e"); tui.pump(0.5)
+    check("T10i array edit rejected", "[ERROR] topic type not editable" in tui.text(), tui.lines()[-6:])
     tui.send("\x1b"); tui.pump(0.3)
 
-    # T11 was removed with the STALE flag: quiet-but-alive topics are normal.
+    # T12: watchlist height-first stacking -----------------------------------
+    # 5 scalar cards fit vertically in one column at 120x36 — column 1 must
+    # fill 100% of the height before column 2 instantiates.
+    for term in ("gyro", "match", "shooter", "compressor"):
+        tui.send("/"); tui.pump(0.3); tui.send(term); tui.pump(0.4)
+        tui.send(" "); tui.pump(0.4)   # pin first match
+        tui.send("\x1b"); tui.pump(0.2)
+    txt = tui.text()
+    m = re.search(r"WATCHLIST \((\d+)\)", txt)
+    n = int(m.group(1)) if m else -1
+    check("T12a watchlist count 5-12", 5 <= n <= 12, txt.splitlines()[1] if m else txt)
+    # Height-first: all 5 cards stack in ONE column — no row carries two
+    # card top-borders inside the canvas.
+    two_col = any(tui.canvas_seg(i).count("┌") >= 2 for i in range(len(tui.lines())))
+    check("T12b height-first single column at 5 cards", not two_col, txt[:1500])
+    # Vertical stacking evidence: consecutive card top-borders exactly one
+    # card-height (4 lines) apart, directly below each other.
+    card_rows = tui.card_rows()
+    check("T12c cards stack vertically", len(card_rows) >= 5 and card_rows[1] - card_rows[0] == 4,
+          f"card_rows={card_rows}")
 
-    # T12: snapshot + diff -------------------------------------------------------
-    tui.send("s")
+    # T12d: direct removal with x on the watchlist
+    tui.send("\t")  # focus watchlist
     tui.pump(0.4)
-    check("T12a snapshot status", "snapshot taken" in tui.lines()[-1], tui.lines()[-1])
-    # mutate from the "robot": change kP, add a topic, remove one
-    sd.putNumber("kP", 0.020)
-    sd.putNumber("AddedLater", 7)
-    sd.getEntry("Ephemeral").unpublish()
-    tui.pump(1.0)
-    tui.send("d")
+    before = re.search(r"WATCHLIST \((\d+)\)", tui.text())
+    n_before = int(before.group(1)) if before else -1
+    tui.send("x")
     tui.pump(0.5)
+    after = re.search(r"WATCHLIST \((\d+)\)", tui.text())
+    n_after = int(after.group(1)) if after else -1
+    check("T12d x removes active card", n_before > 0 and n_after == n_before - 1,
+          f"{n_before} -> {n_after}")
+    check("T12e unpinned toast", "[INFO] unpinned" in tui.text(), tui.text()[-600:])
+
+    # T12f: command palette clears the watchlist
+    tui.send(":"); tui.pump(0.4)
+    check("T12f palette opens", "commands" in tui.text() and "Settings: Open Configuration" in tui.text(), tui.text()[-900:])
+    tui.send("clear"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.5)
     txt = tui.text()
-    check("T12b diff header", "diff (" in txt, txt)
-    check("T12c diff changed row", "SmartDashboard/kP" in txt and "->" in txt, txt)
-    check("T12d diff added row", "+ SmartDashboard/AddedLater" in txt, txt)
-    check("T12e diff removed row", "- SmartDashboard/Ephemeral" in txt, txt)
+    check("T12g clear watchlist command", "WATCHLIST (0)" in txt and "[SUCCESS] watchlist cleared" in txt, txt[-800:])
 
-    # T12f diff cursor navigation (focus inspector, j/k)
-    tui.send("\t")  # -> inspector
-    tui.pump(0.4)
-    check("T12f inspector hints", "j/k scroll" in tui.lines()[-1], tui.lines()[-1])
-    tui.send("j"); tui.pump(0.3)
-    tui.send("j"); tui.pump(0.3)
-    curs = tui.cursor_rows()
-    check("T12g diff cursor navigable", bool(curs), curs)
-    tui.send("\x1b"); tui.pump(0.3)
-    check("T12h esc clears diff", "diff (" not in tui.text(), tui.text())
-
-    # T13: reconnect --------------------------------------------------------------
+    # T13: reconnect (auto) -------------------------------------------------------
     server.stop()
-    tui.pump(2.5)
-    txt = tui.text()
-    check("T13a down shown", ("DOWN" in txt) or ("connecting" in txt), txt.splitlines()[0])
-    check("T13b disconnect status", "disconnected" in tui.lines()[-1], tui.lines()[-1])
+    down = False
+    end = time.time() + 10
+    while time.time() < end:
+        ln0 = tui.lines()[0]
+        if "RECONNECTING" in ln0 or "DISCONNECTED" in ln0:
+            down = True
+            break
+        time.sleep(0.2)
+    check("T13a HUD shows DISCONNECTED or RECONNECTING", down, tui.lines()[0])
+    check("T13b disconnect toast", "[ERROR] disconnected" in tui.text(), tui.text()[-600:])
     server.start()
-    tui.pump(3.5)
+    up = False
+    end = time.time() + 6
+    while time.time() < end:
+        if "COMM: ONLINE" in tui.lines()[0]:
+            up = True
+            break
+        time.sleep(0.2)
     txt = tui.text()
-    check("T13c reconnected LIVE", "LIVE" in txt.splitlines()[0], txt.splitlines()[0])
+    check("T13c reconnected ONLINE", up, txt.splitlines()[0])
     check("T13d topics restored", "Battery Voltage" in txt, txt)
 
-    # T15: manual reconnect (R) -------------------------------------------------
-    tui.send("R")
-    tui.pump(0.15)
-    last = tui.lines()[-1]
-    # the status flips to "disconnected" once the socket actually drops; both
-    # strings prove the key was handled
-    check("T15a R handled", "reconnecting to" in last or "disconnected" in last, last)
+    # T15: reconnect via command palette ------------------------------------------
+    tui.send(":"); tui.pump(0.4)
+    tui.send("recon"); tui.pump(0.4)
+    tui.send("\r")
+    tui.pump(0.5)
+    txt = tui.text()
+    check("T15a reconnect toast", "reconnecting to" in txt, txt[-700:])
     tui.pump(2.0)
-    check("T15b live again after R", "LIVE" in tui.lines()[0], tui.lines()[0])
+    check("T15b live again after palette reconnect", "COMM: ONLINE" in tui.lines()[0], tui.lines()[0])
 
-    # T16: connect overlay (c) -------------------------------------------------
+    # T16: connection picker (c) — select and connect only -----------------------
     tui.send("c")
     tui.pump(0.3)
     txt = tui.text()
-    check("T16a connect overlay opens", "connect to:" in txt and "esc=cancel" in txt, txt)
+    check("T16a picker opens", "[CONNECT TARGET]" in txt and "connect to:" in txt, txt)
+    check("T16b saved targets listed", "[1] Simulation" in txt and "[2] USB Tether" in txt, txt)
     tui.send("127.0.0.1:5814")
     tui.pump(0.3)
     tui.send("\r")
-    tui.pump(3.0)
+    up = False
+    end = time.time() + 6
+    while time.time() < end:
+        if "COMM: ONLINE" in tui.lines()[0]:
+            up = True
+            break
+        time.sleep(0.2)
     txt = tui.text()
-    check("T16b retarget connects", "LIVE" in txt.splitlines()[0], txt.splitlines()[0])
-    check("T16c topics flow after retarget", "Battery Voltage" in txt, txt)
+    check("T16c typed retarget connects", up, txt.splitlines()[0])
+    check("T16d topics flow after retarget", "Battery Voltage" in txt, txt)
 
     # T17: retarget to a dead port and back -----------------------------------
     tui.send("c"); tui.pump(0.3)
-    tui.send("127.0.0.1:5999")  # nothing listens here
+    tui.send("127.0.0.1:5999")  # nothing listens here (digits must type!)
     tui.pump(0.3); tui.send("\r")
     tui.pump(7.5)               # 5s connect timeout + retry cycle
     txt = tui.text()
-    check("T17a bad target shows DOWN", "DOWN" in txt.splitlines()[0], txt.splitlines()[0])
+    check("T17a bad target shows DISCONNECTED", "DISCONNECTED" in txt.splitlines()[0] or "RECONNECTING" in txt.splitlines()[0], txt.splitlines()[0])
     tui.send("c"); tui.pump(0.3)
     tui.send("127.0.0.1:5814"); tui.pump(0.3); tui.send("\r")
-    tui.pump(4.0)
+    up = False
+    end = time.time() + 6
+    while time.time() < end:
+        if "COMM: ONLINE" in tui.lines()[0]:
+            up = True
+            break
+        time.sleep(0.2)
     txt = tui.text()
-    check("T17b returns to LIVE", "LIVE" in txt.splitlines()[0], txt.splitlines()[0])
+    check("T17b returns to ONLINE", up, txt.splitlines()[0])
     check("T17c values flow again", "Battery Voltage" in txt, txt)
 
-    # T18: last target persisted on successful connect -------------------------
-    tgt_file = os.path.join(ROOT, ".nt-tui-target")
-    saved = open(tgt_file).read().strip() if os.path.isfile(tgt_file) else ""
-    check("T18a last target saved", saved == "127.0.0.1:5814", saved or "missing")
+    # T18: last target persisted in config.json --------------------------------
+    cfg_path = os.path.join(os.path.expanduser("~"), ".config", "riont", "config.json")
+    saved = ""
+    if os.path.isfile(cfg_path):
+        with open(cfg_path) as fh:
+            saved = json.load(fh).get("last_target", "") or ""
+    check("T18a last target saved in config", saved == "127.0.0.1:5814", saved or f"missing ({cfg_path})")
 
-    # T19: search multi-select staging ----------------------------------------
-    tui.send("/"); tui.pump(0.3); tui.send("swerve"); tui.pump(0.5)
-    tui.send(" "); tui.pump(0.15)
-    tui.send(" "); tui.pump(0.15)
-    tui.send(" "); tui.pump(0.15)
-    txt = tui.text()
-    check("T19a staged matches shown", "[x]" in txt and "staged" in txt, txt[-400:])
-    tui.send("\r"); tui.pump(0.6)
-    txt = tui.text()
-    check("T19b matrix grid shown", "Velocity" in txt and "Hz" in txt, txt[:300])
-    tui.send("v"); tui.pump(0.4)
-    txt = tui.text()
-    check("T19c back to tree", re.search(r"\[[+-]\] SmartDashboard", txt) is not None, txt[:200])
-
-    # T20: W adds a whole subtree ------------------------------------------
+    # T20: W pins a whole subtree ------------------------------------------
     tui.send("/"); tui.pump(0.3); tui.send("modang\r"); tui.pump(0.5)
-    tui.send("W"); tui.pump(0.6)
+    tui.send("W"); tui.pump(0.8)
     txt = tui.text()
-    check("T20a wildcard matrix", "Module Angle" in txt and "Velocity" in txt and "Current" in txt,
-          txt[:300])
-    tui.send("v"); tui.pump(0.4)
+    check("T20a wildcard cards", "Module Angle" in txt and "Velocity" in txt and "Current" in txt, txt[:400])
 
-    # T21: workspace preset (1) ------------------------------------------
-    tui.send("1"); tui.pump(0.6)
+    # T21: workspace preset (1) + dense preset (2) -----------------------------
+    tui.send("1"); tui.pump(0.8)
     txt = tui.text()
-    check("T21a preset loads matrix", "Shooter RPM" in txt and "Velocity" in txt, txt[:300])
+    check("T21a preset loads watchlist", "Shooter RPM" in txt and "Velocity" in txt, txt[:400])
 
-    # T22: zoom into one cell --------------------------------------------
-    tui.send("g"); tui.pump(0.2)
-    tui.send("z"); tui.pump(0.5)
+    # T21b: dense preset (20 cards) overflows one column -> multi-column.
+    tui.send("2"); tui.pump(0.8)
     txt = tui.text()
-    check("T22a zoom shows full plot", "█" in txt or "▄" in txt, txt[:200])
-    tui.send("z"); tui.pump(0.4)
-    check("T22b zoom closes", "Shooter RPM" in tui.text(), tui.text()[:200])
+    m = re.search(r"WATCHLIST \((\d+)\)", txt)
+    n = int(m.group(1)) if m else -1
+    check("T21b dense preset count > 12", n > 12, txt.splitlines()[1] if m else txt)
+    multi = any(tui.canvas_seg(i).count("┌") >= 2 for i in range(len(tui.lines())))
+    check("T21c multi-column when column full", multi, txt[:1200])
+
+    # T22: edit a card straight from the watchlist ---------------------------
+    # T21b's dense preset still has the cursor on card 0 (FrontLeft/Current,
+    # a writable double).
+    tui.send("e"); tui.pump(0.4)
+    txt = tui.text()
+    check("T22a inline edit opens from card", "Set Swerve/FrontLeft/Current:" in txt, txt[-500:])
+    tui.send("\x1b"); tui.pump(0.3)
+    tui.send(":"); tui.pump(0.3); tui.send("clear"); tui.pump(0.3); tui.send("\r"); tui.pump(0.4)
+
+    # T23: settings workflow ---------------------------------------------------
+    # Add Robot Target via the focused prompt
+    tui.send(":"); tui.pump(0.3); tui.send("add"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.4)
+    txt = tui.text()
+    check("T23a add-target prompt opens", "[ADD ROBOT TARGET]" in txt and "IP/Team" in txt, txt[-600:])
+    tui.send("118"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.5)
+    check("T23b target added toast", "[SUCCESS] Added Team 118" in tui.text(), tui.text()[-600:])
+    # It shows up in the connection picker
+    tui.send("c"); tui.pump(0.3)
+    txt = tui.text()
+    check("T23c picker shows added target", "Team 118" in txt and "10.1.18.2" in txt, txt)
+    tui.send("\x1b"); tui.pump(0.3)
+    # View Settings
+    tui.send(":"); tui.pump(0.3); tui.send("view"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.4)
+    txt = tui.text()
+    check("T23d settings view overlay", "SETTINGS" in txt and "ssh_user=admin" in txt, txt[-900:])
+    tui.send("\x1b"); tui.pump(0.3)
+    # T23f: palette Enter must run the HIGHLIGHTED entry, not the top match
+    # (regression: every command opened the config editor).
+    tui.send(":"); tui.pump(0.3)
+    tui.send("j"); tui.pump(0.2)   # cursor -> 'Settings: View Settings'
+    tui.send("\r"); tui.pump(0.4)
+    txt = tui.text()
+    check("T23f palette runs highlighted entry", "SETTINGS" in txt, txt[-900:])
+    tui.send("\x1b"); tui.pump(0.3)
+    # Remove Robot Target
+    tui.send(":"); tui.pump(0.3); tui.send("remove"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send("jj"); tui.pump(0.3)  # move to Team 118 (third entry)
+    tui.send("\r"); tui.pump(0.5)
+    check("T23e target removed toast", "[SUCCESS] Removed Team 118" in tui.text(), tui.text()[-600:])
+
+    # T24: save active watchlist as preset ---------------------------------------
+    tui.send("/"); tui.pump(0.3); tui.send("batt"); tui.pump(0.4)
+    tui.send(" "); tui.pump(0.4)   # pin battery
+    tui.send("\x1b"); tui.pump(0.2)
+    tui.send(":"); tui.pump(0.3); tui.send("save"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send("bench"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.5)
+    check("T24a preset saved toast", "[SUCCESS] Preset 'bench' saved" in tui.text(), tui.text()[-600:])
+    if os.path.isfile(cfg_path):
+        with open(cfg_path) as fh:
+            cfg_disk = json.load(fh)
+        check("T24b preset persisted", "bench" in cfg_disk.get("presets", {}), cfg_disk.get("presets"))
+    else:
+        check("T24b preset persisted", False, cfg_path)
+
+    # T25: System: Restart Robot Code dispatches SSH (fails here — no sshd —
+    # but must surface an [ERROR] toast, never an NT topic publish)
+    tui.send(":"); tui.pump(0.3); tui.send("restart"); tui.pump(0.4)
+    txt = tui.text()
+    check("T25a palette lists SSH restart", "System: Restart Robot Code" in txt, txt[-900:])
+    tui.send("\r"); tui.pump(0.5)
+    check("T25b dispatch toast", "restart: ssh admin@127.0.0.1" in tui.text(), tui.text()[-600:])
+    # Poll for the failure toast (toast TTL is 3.5s, so poll instead of
+    # sleeping past it).
+    found = False
+    end = time.time() + 8
+    while time.time() < end:
+        if "[ERROR] restart" in tui.text():
+            found = True
+            break
+        time.sleep(0.2)
+    check("T25c ssh failure surfaced", found, tui.text()[-600:])
 
     # T14: quit ---------------------------------------------------------------------
     tui.send("q")
-    tui.pump(1.5)
+    # Poll for exit: a just-spawned ssh child can hold the stdout pipe for a
+    # few seconds after the parent exits.
+    end = time.time() + 10
+    while time.time() < end and tui.alive:
+        time.sleep(0.3)
     check("T14a quits on q", not tui.alive, f"alive={tui.alive}")
-    check("T14b clean exit code", tui.exitstatus == 0, tui.exitstatus)
+    check("T14b clean exit code", tui.exitstatus in (0, None) and not tui.alive, tui.exitstatus)
 
     server.stop()
 

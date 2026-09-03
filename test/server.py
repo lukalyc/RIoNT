@@ -9,7 +9,7 @@ import time
 import ntcore
 
 inst = ntcore.NetworkTableInstance.getDefault()
-inst.startServer("nttui-test-persist.json", "0.0.0.0", 1735, 5814)
+inst.startServer("riont-test-persist.json", "0.0.0.0", 1735, 5814)
 print("NT4 server on 0.0.0.0:5814", flush=True)
 
 sd = inst.getTable("SmartDashboard")
