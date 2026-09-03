@@ -1,0 +1,9 @@
+/target
+
+# runtime artifacts
+*.log
+nttui-*.json
+.nt-tui-target
+tui_out.txt
+test/server.log
+__pycache__/
