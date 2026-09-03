@@ -256,6 +256,10 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
             }
             // tick
             _ = tick.tick() => {
+                // Grid columns track the terminal width (~34 cols per card).
+                if let Ok(sz) = terminal.size() {
+                    app.grid_cols = ((sz.width as usize) / 34).clamp(1, 4);
+                }
                 if last_draw.elapsed() >= Duration::from_millis(8) {
                     trace(&format!("draw query={:?} mode={:?} topics={}", app.query, app.mode, app.store.topics.len()));
                     // Every 500 ms force a full repaint: ratatui only emits

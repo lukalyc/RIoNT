@@ -2,10 +2,11 @@
 //! reserved for state that demands attention: green = healthy/editable,
 //! yellow = retry/warning, red = down/error/stale.
 
+pub mod plot;
 pub mod sparkline;
 pub mod tree;
 
-use crate::app::{App, DiffRow, Focus, Mode, StatusKind};
+use crate::app::{App, DiffRow, Focus, Mode, StatusKind, View};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -56,7 +57,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(root);
 
     draw_header(f, app, rows[0]);
-    draw_main(f, app, rows[1]);
+    match app.view {
+        View::Tree => draw_main(f, app, rows[1]),
+        View::Matrix => draw_matrix(f, app, rows[1]),
+        View::Zoom => draw_zoom(f, app, rows[1]),
+    }
     draw_status(f, app, rows[2]);
 
     // overlays
@@ -146,6 +151,198 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
 
     draw_tree(f, app, cols[0]);
     draw_inspector(f, app, cols[1]);
+}
+
+/// Shorten a topic path to its last two segments, e.g.
+/// `SmartDashboard/Arm/Angle` -> `Arm/Angle`, ellipsized on the left to fit.
+fn short_name(path: &str, width: usize) -> String {
+    let segs: Vec<&str> = path.split('/').collect();
+    let mut s = if segs.len() >= 2 {
+        format!("{}/{}", segs[segs.len() - 2], segs[segs.len() - 1])
+    } else {
+        path.to_string()
+    };
+    let n = s.chars().count();
+    if n > width && width > 1 {
+        s = format!("…{}", s.chars().skip(n - width + 1).collect::<String>());
+    }
+    s
+}
+
+fn pad_cell(spans: &mut Vec<Span>, text: &str, width: usize) {
+    let n = text.chars().count();
+    let mut t = text.to_string();
+    if n > width {
+        t = text.chars().take(width).collect();
+    }
+    spans.push(plain(t));
+    if n < width {
+        spans.push(plain(" ".repeat(width - n)));
+    }
+}
+
+/// Auto-packed telemetry matrix: every cell shows name, bold value, Hz and
+/// an inline sparkline. No canvas, no dragging — cells pack themselves.
+fn draw_matrix(f: &mut Frame, app: &App, area: Rect) {
+    let cells = app.matrix_cells();
+    if cells.is_empty() {
+        let mut lines = vec![Line::from(vec![
+            bold("matrix empty"),
+            dim("  — stage topics with / + space, press W on a directory, or load a preset with 1-9"),
+        ])];
+        for (i, p) in app.presets.iter().enumerate() {
+            lines.push(Line::from(vec![
+                dim(format!("  [{}] ", i + 1)),
+                plain(&p.name),
+                dim(format!("  ({} item(s))", p.topics.len())),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+
+    let cols = app.grid_cols.max(1);
+    let card_w = ((area.width as usize) / cols).max(12);
+    let card_h = 3usize; // name / value+hz / sparkline
+    let grid_rows = ((area.height as usize) / card_h).max(1);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+    'rows: for r in 0..grid_rows {
+        let mut name_l: Vec<Span> = Vec::new();
+        let mut val_l: Vec<Span> = Vec::new();
+        let mut spark_l: Vec<Span> = Vec::new();
+        for c in 0..cols {
+            let idx = r * cols + c;
+            if idx >= cells.len() {
+                name_l.push(plain(" ".repeat(card_w)));
+                val_l.push(plain(" ".repeat(card_w)));
+                spark_l.push(plain(" ".repeat(card_w)));
+                continue;
+            }
+            let topic = &cells[idx];
+            let td = app.store.topics.get(topic);
+            let val = td
+                .and_then(|t| t.current.as_ref())
+                .map(|v| v.format())
+                .unwrap_or_else(|| "-".into());
+            let hz = td
+                .and_then(|t| t.hz())
+                .map(|h| format!("{:.0}Hz", h))
+                .unwrap_or_else(|| "-".into());
+            let hist = td.map(|t| &t.history);
+            let sel = idx == app.matrix_cursor;
+
+            let name = short_name(topic, card_w.saturating_sub(2));
+            let name = format!(" {} ", name);
+            if sel {
+                pad_cell(&mut name_l, &name, card_w);
+                // re-color the just-padded spans reversed
+                let start = name_l.len() - 1; // last two spans belong to this cell
+                for s in &mut name_l[start..] {
+                    s.style = Style::default().add_modifier(Modifier::REVERSED);
+                }
+            } else {
+                name_l.push(dim(name));
+            }
+
+            let hz_w = hz.len().min(card_w.saturating_sub(6));
+            let val_w = card_w.saturating_sub(hz_w + 2);
+            let mut v = val;
+            if v.chars().count() > val_w {
+                v = v.chars().take(val_w).collect();
+            }
+            let vpad = card_w.saturating_sub(v.chars().count() + hz_w + 1);
+            if sel {
+                val_l.push(rev(v));
+                val_l.push(plain(" ".repeat(vpad)));
+                val_l.push(rev(hz));
+            } else {
+                val_l.push(bold(v));
+                val_l.push(plain(" ".repeat(vpad)));
+                val_l.push(dim(hz));
+            }
+            val_l.push(plain(" ")); // gutter between cards
+
+            let spark = hist
+                .map(|h| sparkline::render(h, card_w.saturating_sub(2)))
+                .unwrap_or_default();
+            let spark = format!(" {}", spark);
+            if sel {
+                pad_cell(&mut spark_l, &spark, card_w);
+                let start = spark_l.len() - 1;
+                for s in &mut spark_l[start..] {
+                    s.style = Style::default().add_modifier(Modifier::REVERSED);
+                }
+            } else {
+                spark_l.push(dim(spark));
+            }
+        }
+        lines.push(Line::from(name_l));
+        lines.push(Line::from(val_l));
+        lines.push(Line::from(spark_l));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Zoom: one topic exploded into a full-width multi-row ASCII plot.
+fn draw_zoom(f: &mut Frame, app: &App, area: Rect) {
+    let Some(topic) = &app.zoom_topic else {
+        f.render_widget(Paragraph::new(dim("no topic")), area);
+        return;
+    };
+    let td = app.store.topics.get(topic);
+    let val = td
+        .and_then(|t| t.current.as_ref())
+        .map(|v| v.format())
+        .unwrap_or_else(|| "-".into());
+    let hz = td
+        .and_then(|t| t.hz())
+        .map(|h| format!("{:.2} Hz", h))
+        .unwrap_or_else(|| "-".into());
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![bold(topic)]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            val.clone(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        dim(format!("   {}   last update ", hz)),
+        plain(
+            td.and_then(|t| t.age_secs())
+                .map(|a| format!("{:.2}s", a))
+                .unwrap_or_else(|| "-".into()),
+        ),
+    ]));
+    let used = lines.len() + 2;
+    let plot_h = (area.height as usize).saturating_sub(used).max(1);
+    let w = area.width as usize;
+    if let Some(t) = td {
+        for row in plot::render(&t.history, w, plot_h) {
+            lines.push(Line::from(vec![ok(row)]));
+        }
+    }
+    // min/max footer
+    if let Some(t) = td {
+        let (min, max) = t
+            .history
+            .iter()
+            .cloned()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+                (a.min(v), b.max(v))
+            });
+        if min.is_finite() {
+            lines.push(Line::from(dim(format!(
+                "min {:.4}  max {:.4}  ({} samples)",
+                min,
+                max,
+                t.history.len()
+            ))));
+        }
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
@@ -331,9 +528,13 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let hints = match app.focus {
-        Focus::Tree => "j/k move  h fold  e edit  / find  tab pane  s snap  d diff  R recon  c connect  q quit",
-        Focus::Inspector => "j/k scroll  tab pane  q quit",
+    let hints = match app.view {
+        View::Zoom => "z close  v grid  q quit",
+        View::Matrix => "h/j/k/l move  z zoom  e edit  v tree  1-9 presets  q quit",
+        View::Tree => match app.focus {
+            Focus::Tree => "j/k move  h fold  e edit  / find  tab  s snap  d diff  W all  v grid  R recon  c conn  q quit",
+            Focus::Inspector => "j/k scroll  tab pane  q quit",
+        },
     };
     // Status first: a fresh message (published ... / disconnected ...) must
     // never be truncated away by the hint list; hints may clip instead.
@@ -359,6 +560,11 @@ fn draw_search(f: &mut Frame, app: &App) {
     f.render_widget(ratatui::widgets::Clear, area);
 
     let names = app.store.sorted_names();
+    let title = if app.staged.is_empty() {
+        "search".to_string()
+    } else {
+        format!("search ({} staged — enter adds to matrix)", app.staged.len())
+    };
     let mut lines: Vec<Line> = vec![Line::from(vec![plain("/"), bold(app.query.clone())])];
     let visible = area.height as usize - 2;
     let start = app
@@ -374,13 +580,18 @@ fn draw_search(f: &mut Frame, app: &App) {
     {
         let name = &names[idx];
         let row = start + i;
-        if row == app.search_cursor {
-            lines.push(Line::from(vec![rev(format!(" {}", name))]));
+        let mark = if app.staged.iter().any(|t| t == name) {
+            ok("[x] ")
         } else {
-            lines.push(Line::from(plain(format!(" {}", name))));
+            dim("[ ] ")
+        };
+        if row == app.search_cursor {
+            lines.push(Line::from(vec![rev(format!(" {} ", name))]));
+        } else {
+            lines.push(Line::from(vec![plain(" "), mark, plain(name.clone())]));
         }
     }
-    let block = Block::default().borders(Borders::ALL).title("search");
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines), inner);

@@ -10,6 +10,7 @@ flows.
 Run:  C:/Users/lryam/.conda/envs/nt-tui-test/python.exe test/harness.py
 """
 import codecs
+import json
 import os
 import socket
 import subprocess
@@ -229,6 +230,12 @@ def main():
     # A topic published by the harness itself so T12 can unpublish it (clients
     # cannot unpublish topics owned by another publisher, e.g. the robot's).
     sd.putString("Ephemeral", "here")
+
+    # Workspace presets file for the T21 matrix-preset test.
+    with open(os.path.join(ROOT, ".nt-views.json"), "w") as fh:
+        fh.write(json.dumps([
+            {"name": "Test", "topics": ["SmartDashboard/Shooter RPM", "Swerve/*"]},
+        ]))
 
     tui = Tui()
     tui.pump(2.0)
@@ -466,6 +473,41 @@ def main():
     saved = open(tgt_file).read().strip() if os.path.isfile(tgt_file) else ""
     check("T18a last target saved", saved == "127.0.0.1:5814", saved or "missing")
 
+    # T19: search multi-select staging ----------------------------------------
+    tui.send("/"); tui.pump(0.3); tui.send("swerve"); tui.pump(0.5)
+    tui.send(" "); tui.pump(0.15)
+    tui.send(" "); tui.pump(0.15)
+    tui.send(" "); tui.pump(0.15)
+    txt = tui.text()
+    check("T19a staged matches shown", "[x]" in txt and "staged" in txt, txt[-400:])
+    tui.send("\r"); tui.pump(0.6)
+    txt = tui.text()
+    check("T19b matrix grid shown", "Velocity" in txt and "Hz" in txt, txt[:300])
+    tui.send("v"); tui.pump(0.4)
+    txt = tui.text()
+    check("T19c back to tree", re.search(r"\[[+-]\] SmartDashboard", txt) is not None, txt[:200])
+
+    # T20: W adds a whole subtree ------------------------------------------
+    tui.send("/"); tui.pump(0.3); tui.send("modang\r"); tui.pump(0.5)
+    tui.send("W"); tui.pump(0.6)
+    txt = tui.text()
+    check("T20a wildcard matrix", "Module Angle" in txt and "Velocity" in txt and "Current" in txt,
+          txt[:300])
+    tui.send("v"); tui.pump(0.4)
+
+    # T21: workspace preset (1) ------------------------------------------
+    tui.send("1"); tui.pump(0.6)
+    txt = tui.text()
+    check("T21a preset loads matrix", "Shooter RPM" in txt and "Velocity" in txt, txt[:300])
+
+    # T22: zoom into one cell --------------------------------------------
+    tui.send("g"); tui.pump(0.2)
+    tui.send("z"); tui.pump(0.5)
+    txt = tui.text()
+    check("T22a zoom shows full plot", "█" in txt or "▄" in txt, txt[:200])
+    tui.send("z"); tui.pump(0.4)
+    check("T22b zoom closes", "Shooter RPM" in tui.text(), tui.text()[:200])
+
     # T14: quit ---------------------------------------------------------------------
     tui.send("q")
     tui.pump(1.5)
@@ -475,6 +517,10 @@ def main():
     server.stop()
 
     # summary ------------------------------------------------------------------------
+    try:
+        os.remove(os.path.join(ROOT, ".nt-views.json"))
+    except OSError:
+        pass
     print("", flush=True)
     fails = [n for (n, ok) in results if not ok]
     print(f"==== {len(results) - len(fails)}/{len(results)} checks passed ====")

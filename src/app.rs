@@ -21,6 +21,30 @@ pub enum Focus {
     Inspector,
 }
 
+/// Top-level screen. Tree = browse/edit; Matrix = auto-packed multi-topic
+/// grid; Zoom = one topic exploded into a full-screen plot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Tree,
+    Matrix,
+    Zoom,
+}
+
+/// One entry of the telemetry matrix. `Glob` adopts every topic under a
+/// prefix (live: new keys appear automatically as the robot publishes them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatrixSource {
+    Topic(String),
+    Glob(String),
+}
+
+/// A named workspace preset loaded from `.nt-views.json`.
+#[derive(Debug, Clone)]
+pub struct Preset {
+    pub name: String,
+    pub topics: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum DiffRow {
     Changed(String, String, String),
@@ -63,6 +87,17 @@ pub struct App {
     pub tree_cursor: usize,
     pub inspector_scroll: usize,
     pub focus: Focus,
+    pub view: View,
+
+    // telemetry matrix
+    pub matrix: Vec<MatrixSource>,
+    pub matrix_cursor: usize,
+    /// Grid columns, recomputed from the terminal width in the main loop.
+    pub grid_cols: usize,
+    pub zoom_topic: Option<String>,
+    /// Topics staged via multi-select in the search overlay.
+    pub staged: Vec<String>,
+    pub presets: Vec<Preset>,
 
     // modes
     pub mode: Mode,
@@ -105,6 +140,13 @@ impl App {
             tree_cursor: 0,
             inspector_scroll: 0,
             focus: Focus::Tree,
+            view: View::Tree,
+            matrix: Vec::new(),
+            matrix_cursor: 0,
+            grid_cols: 3,
+            zoom_topic: None,
+            staged: Vec::new(),
+            presets: load_presets(),
             mode: Mode::Normal,
             query: String::new(),
             search_matches: Vec::new(),
@@ -222,7 +264,28 @@ impl App {
     fn handle_normal(&mut self, key: KeyEvent) -> UiAction {
         match key.code {
             KeyCode::Char('q') => return UiAction::Quit,
+            KeyCode::Char('R') => {
+                // Drop the connection and reconnect to the same target now
+                // (handy when the robot came back after a code deploy).
+                self.say(format!("reconnecting to {}...", self.target));
+                return UiAction::Client(ClientCommand::Reconnect);
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                // Workspace presets: 1-9 load entries of .nt-views.json.
+                self.apply_preset(c.to_digit(10).unwrap() as usize - 1);
+                return UiAction::None;
+            }
+            _ => {}
+        }
+        match self.view {
+            View::Tree => self.handle_tree_key(key),
+            View::Matrix => self.handle_matrix_key(key),
+            View::Zoom => self.handle_zoom_key(key),
+        }
+    }
 
+    fn handle_tree_key(&mut self, key: KeyEvent) -> UiAction {
+        match key.code {
             KeyCode::Char('j') | KeyCode::Down => match self.focus {
                 Focus::Tree => self.tree_down(),
                 Focus::Inspector => {
@@ -335,11 +398,28 @@ impl App {
                 }
             }
 
-            KeyCode::Char('R') => {
-                // Drop the connection and reconnect to the same target now
-                // (handy when the robot came back after a code deploy).
-                self.say(format!("reconnecting to {}...", self.target));
-                return UiAction::Client(ClientCommand::Reconnect);
+            KeyCode::Char('W') => {
+                // Add the cursor's topic (or a topic's whole subtree) to the
+                // telemetry matrix and switch to it.
+                if let Some((path, is_topic)) = self.cursor_path() {
+                    let src = if is_topic {
+                        MatrixSource::Topic(path.clone())
+                    } else {
+                        MatrixSource::Glob(path.clone())
+                    };
+                    self.matrix.push(src);
+                    self.matrix_cursor = 0;
+                    self.view = View::Matrix;
+                    let n = self.matrix_cells().len();
+                    self.say(format!("matrix: {} cell(s)", n));
+                }
+            }
+
+            KeyCode::Char('v') => {
+                self.view = View::Matrix;
+                self.matrix_cursor = self.matrix_cursor.min(self.matrix_cells().len().saturating_sub(1));
+                let n = self.matrix_cells().len();
+                self.say(format!("matrix: {} cell(s)", n));
             }
 
             KeyCode::Esc => {
@@ -354,13 +434,122 @@ impl App {
         UiAction::None
     }
 
+    fn handle_matrix_key(&mut self, key: KeyEvent) -> UiAction {
+        let n = self.matrix_cells().len();
+        let cols = self.grid_cols.max(1);
+        let mut c = self.matrix_cursor;
+        match key.code {
+            KeyCode::Char('v') | KeyCode::Esc => {
+                self.view = View::Tree;
+            }
+            KeyCode::Char('z') => {
+                if let Some(topic) = self.matrix_cells().get(c) {
+                    self.zoom_topic = Some(topic.clone());
+                    self.view = View::Zoom;
+                }
+            }
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if let Some(topic) = self.matrix_cells().get(c).cloned() {
+                    if self.is_writable(&topic) {
+                        self.mode = Mode::Edit;
+                        self.edit_topic = Some(topic);
+                        self.edit_input.clear();
+                        self.edit_error = None;
+                    } else {
+                        self.say_err("topic type not editable");
+                    }
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => c = (c + cols).min(n.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => c = c.saturating_sub(cols),
+            KeyCode::Char('h') | KeyCode::Left => c = c.saturating_sub(1),
+            KeyCode::Char('l') | KeyCode::Right => c = (c + 1).min(n.saturating_sub(1)),
+            KeyCode::Char('g') => c = 0,
+            KeyCode::Char('G') => c = n.saturating_sub(1),
+            _ => {}
+        }
+        self.matrix_cursor = c;
+        UiAction::None
+    }
+
+    fn handle_zoom_key(&mut self, key: KeyEvent) -> UiAction {
+        match key.code {
+            KeyCode::Char('z') | KeyCode::Char('v') | KeyCode::Esc => {
+                self.view = View::Matrix;
+            }
+            _ => {}
+        }
+        UiAction::None
+    }
+
+    /// Load preset `idx` (0-based) into the matrix and switch to it.
+    fn apply_preset(&mut self, idx: usize) {
+        match self.presets.get(idx) {
+            Some(p) => {
+                self.matrix = p
+                    .topics
+                    .iter()
+                    .map(|t| {
+                        if let Some(prefix) = t.strip_suffix("/*") {
+                            MatrixSource::Glob(prefix.to_string())
+                        } else {
+                            MatrixSource::Topic(t.clone())
+                        }
+                    })
+                    .collect();
+                self.matrix_cursor = 0;
+                self.view = View::Matrix;
+                let n = self.matrix_cells().len();
+                self.say(format!("preset {}: {} cell(s)", p.name, n));
+            }
+            None => {
+                self.say_warn(format!(
+                    "no preset {} ({} loaded from .nt-views.json)",
+                    idx + 1,
+                    self.presets.len()
+                ));
+            }
+        }
+    }
+
     fn handle_search(&mut self, key: KeyEvent) -> UiAction {
         match key.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
+                self.staged.clear();
+            }
+            KeyCode::Char(' ') | KeyCode::Tab => {
+                // Multi-select staging: toggle the highlighted match into the
+                // staged set, then advance (lazygit-style batch selection).
+                if let Some(&idx) = self.search_matches.get(self.search_cursor) {
+                    let names = self.store.sorted_names();
+                    if let Some(topic) = names.get(idx).cloned() {
+                        if let Some(pos) = self.staged.iter().position(|t| t == &topic) {
+                            self.staged.remove(pos);
+                        } else {
+                            self.staged.push(topic);
+                        }
+                    }
+                }
+                let n = self.search_matches.len();
+                self.search_cursor = (self.search_cursor + 1).min(n.saturating_sub(1));
             }
             KeyCode::Enter => {
-                // Jump to the selected match.
+                if !self.staged.is_empty() {
+                    // Commit all staged topics to the matrix and open it.
+                    for t in self.staged.drain(..) {
+                        if !self.matrix.contains(&MatrixSource::Topic(t.clone())) {
+                            self.matrix.push(MatrixSource::Topic(t));
+                        }
+                    }
+                    self.matrix_cursor = 0;
+                    self.view = View::Matrix;
+                    self.mode = Mode::Normal;
+                    let n = self.matrix_cells().len();
+                    self.say(format!("matrix: {} cell(s)", n));
+                    return UiAction::None;
+                }
+                // No staging: jump to the selected match in the tree.
                 if let Some(&idx) = self.search_matches.get(self.search_cursor) {
                     let names = self.store.sorted_names();
                     if let Some(topic) = names.get(idx).cloned() {
@@ -532,6 +721,32 @@ impl App {
         self.search_matches = scored.into_iter().map(|(_, i)| i).collect();
         self.search_cursor = 0;
     }
+
+    /// Expand the matrix sources into the concrete topic list. Globs are
+    /// re-expanded on every call, so topics the robot publishes later are
+    /// adopted automatically.
+    pub fn matrix_cells(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for src in &self.matrix {
+            match src {
+                MatrixSource::Topic(t) => {
+                    if seen.insert(t.clone()) {
+                        out.push(t.clone());
+                    }
+                }
+                MatrixSource::Glob(prefix) => {
+                    let pfx = format!("{}/", prefix);
+                    for n in self.store.sorted_names() {
+                        if n.starts_with(&pfx) && seen.insert(n.clone()) {
+                            out.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 impl DiffRow {
@@ -577,6 +792,34 @@ fn parse_value(s: &str, hint: Option<NtType>) -> Result<NtValue, String> {
         }
         Some(_) => Err("only boolean/int/double/string topics are editable".into()),
     }
+}
+
+/// Workspace presets from `.nt-views.json` (next to where nt-tui runs):
+/// `[{"name": "Swerve", "topics": ["Swerve/*", "SmartDashboard/Battery Voltage"]}]`.
+/// A trailing `/*` subscribes a whole subtree.
+fn load_presets() -> Vec<Preset> {
+    let Ok(txt) = std::fs::read_to_string(".nt-views.json") else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+        return Vec::new();
+    };
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|it| {
+                    let name = it.get("name")?.as_str()?.to_string();
+                    let topics = it
+                        .get("topics")?
+                        .as_array()?
+                        .iter()
+                        .filter_map(|t| t.as_str().map(String::from))
+                        .collect();
+                    Some(Preset { name, topics })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Turn user input (team number, host, or host:port) into a `host:port`
