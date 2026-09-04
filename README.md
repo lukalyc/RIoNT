@@ -40,21 +40,35 @@ riont                 # last successfully connected target, else 172.22.11.2
 ```
 
 Connects on TCP 5810 (NT4 WebSocket) and auto-reconnects forever. The last
-target is remembered in `.riont-target` next to where you launch from.
+successfully connected target is remembered in `~/.config/riont/config.json`
+(`last_target`) and reused by a bare `riont` launch, falling back to the
+USB tether address.
+
+Connecting to a different target mid-session (`c`) is a clean handoff: the
+topic tree, values and uptime baseline reset — the new robot's topics
+replace the old ones instead of mixing with them. The watchlist survives
+(glob pins re-expand as the new robot publishes).
 
 ## Layout
 
-- **Top HUD (1 line):** `COMM` (green `ONLINE <ip>` / flashing amber
-  `RECONNECTING...` / red `DISCONNECTED`), `CODE` (`RUNNING` while robot
+- **Top HUD (1 line):** `COMM` (green `ONLINE <ip>` / amber
+  `RECONNECTING (attempt N — <reason>)` while retrying — the last failure
+  reason and retry count, so an unreachable robot is diagnosable at a
+  glance / red `DISCONNECTED — <reason>` for the moment a live link drops,
+  before retries start), `CODE` (`RUNNING` while robot
   frames stream within 500 ms, `STOPPED` when the connection is alive but
   the user loop went quiet, `--` offline), and `UPTIME` — rendered
   `HH:MM:SS` from the **robot's server clock**: on a roboRIO NT4
   timestamps are FPGA µs since boot, so the latest value timestamp IS the
   uptime; epoch-based off-robot servers fall back to the first→last delta.
   Topic count rounds it out. No raw RTT, no global Hz.
+  Repeated identical failures (e.g. an unreachable target) are not re-toasted
+  every retry — the HUD carries them; toasts fire when the reason changes.
+  Toast lifetimes scale with severity (info/success 3.5 s, errors 10 s).
 - **Topic Tree (35% W, 70% H):** collapsible namespaces with inline values,
-  type tags (green = editable), and an amber `*` on topics pinned to the
-  watchlist. Folding is silent — the tree state is its own feedback. The
+  type tags (green = editable), and stars on pinned topics: bold amber `*`
+  for direct pins, dim `*` when covered by a subtree (glob) pin. Folding is
+  silent — the tree state is its own feedback. The
   selected row inverts the FULL row (tag, value, rate included), so the
   highlight never clips content. Active pane border: amber (tree) /
   cyan (watchlist); inactive panes use muted grey `#3C3836`.
@@ -94,6 +108,7 @@ target is remembered in `.riont-target` next to where you launch from.
 | `c` / `Shift+C` | **Connection Picker** (below) | |
 | `:` / `Ctrl-P` | **Command Palette** (below) | |
 | `1`-`9` | load workspace preset | |
+| `u` | restore previous watchlist (undo a preset load / clear) | same |
 | `q` / `Ctrl-C` | quit | |
 
 ### Connection Picker (`c`)
@@ -103,17 +118,19 @@ Select and connect only — zero management options:
 ```
 ┌─ [CONNECT TARGET] ──────────────────────────┐
 │   connect to: ... (free text input)         │
-│ > [1] Simulation       127.0.0.1:5810       │
-│   [2] USB Tether       172.22.11.2          │
-│   [3] Team 118         10.1.18.2            │
-│ [Enter] Connect   [j/k] Select   [Esc]      │
+│ > Simulation          127.0.0.1:5810       │
+│   USB Tether           172.22.11.2          │
+│   Team 118             10.1.18.2            │
+│ [Enter] Connect [Arrows] Select [Esc]       │
 └─────────────────────────────────────────────┘
 ```
 
-Saved targets come from `config.json`, most recently used first. Digits
-are ordinary input (IPs start with them — quick-jump-on-digit would hijack
-address typing); select with `j`/`k`/arrows, `Enter` connects the typed
-address or the highlighted entry, `Esc` cancels.
+Saved targets come from `config.json`, most recently used first. Select
+with arrows, `Enter` connects the typed address or the highlighted entry,
+`Esc` cancels. Digits are ordinary input — addresses and team numbers
+start with digits, so there is deliberately no digit quick-select: a bare
+`1` is always the first character of what you are typing, never a menu
+shortcut.
 
 ### Command palette (`:` or `Ctrl+P`)
 
@@ -121,13 +138,17 @@ Universal searchable action runner — every entry names its subsystem:
 
 - `Settings: Open Configuration` — opens `config.json` in `$VISUAL`/
   `$EDITOR` (notepad on Windows, `vi` elsewhere); the TUI suspends and
-  restores around the editor.
+  restores around the editor, and the config is **reloaded on exit** so
+  changes take effect immediately (a file that still fails to parse warns
+  with the error; it is never overwritten with defaults — the original is
+  backed up to `config.json.bak` first).
 - `Settings: View Settings` — read-only summary (targets, presets, SSH).
 - `Settings: Add Robot Target` — focused single-input prompt
   (`IP/Team (e.g. "Practice 10.99.86.2" or "118"): [ ]`); validates,
   appends to config, toasts `Added Team 118`.
 - `Settings: Remove Robot Target` — picker; `Enter` removes, toasts.
-- `Watchlist: Save Active as Preset` / `Load Preset` / `Clear All`.
+- `Watchlist: Save Active as Preset` / `Load Preset` / `Clear All` /
+  `Restore Previous` (undo for a preset load or clear — also bound to `u`).
 - `NetworkTables: Reconnect Socket` — **pure client action**: drops the
   socket and re-handshakes. Never queries a topic.
 - `System: Restart Robot Code` — **primary method: SSH**. Dispatches a
@@ -177,7 +198,9 @@ Set limelight-front/tv:  [ 1.0000_ ]
 ```
 
 `Enter` publishes over NT4 (with automatic retransmission of the first
-value frame); `Esc` cancels without writing.
+value frame); `Esc` cancels without writing. While disconnected the value
+is queued and re-sent on the next successful connection — the toast says
+`queued … — offline, will send on reconnect` instead of claiming success.
 
 ### Workspace presets (views as code)
 
@@ -197,7 +220,13 @@ everyone gets the same views:
 
 A trailing `/*` means "every topic under this subtree" — topics the robot
 starts publishing later are adopted automatically. Load with `1`-`9` or via
-the palette's Load Preset picker.
+the palette's Load Preset picker. Loading a preset replaces the current
+watchlist; the old one is stashed, and `u` (or `Watchlist: Restore Previous`)
+brings it back.
+
+The live watchlist is also persisted to `config.json` (`"last_view"`, same
+`topic` / `prefix/*` format) after every change, so a restart or crash never
+loses your view — it is restored on the next launch.
 
 ## Architecture
 

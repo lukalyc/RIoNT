@@ -78,12 +78,13 @@ pub enum Command {
     WatchlistSavePreset,
     WatchlistLoadPreset,
     WatchlistClear,
+    WatchlistRestorePrevious,
     ReconnectNt,
     RestartRobotCode,
     CopyTopicPath,
 }
 
-pub const COMMANDS: [(Command, &str); 10] = [
+pub const COMMANDS: [(Command, &str); 11] = [
     (Command::SettingsOpen, "Settings: Open Configuration"),
     (Command::SettingsView, "Settings: View Settings"),
     (Command::SettingsAddTarget, "Settings: Add Robot Target"),
@@ -91,6 +92,7 @@ pub const COMMANDS: [(Command, &str); 10] = [
     (Command::WatchlistSavePreset, "Watchlist: Save Active as Preset"),
     (Command::WatchlistLoadPreset, "Watchlist: Load Preset"),
     (Command::WatchlistClear, "Watchlist: Clear All"),
+    (Command::WatchlistRestorePrevious, "Watchlist: Restore Previous"),
     (Command::ReconnectNt, "NetworkTables: Reconnect Socket"),
     (Command::RestartRobotCode, "System: Restart Robot Code"),
     (Command::CopyTopicPath, "Copy Active Topic Path"),
@@ -138,6 +140,9 @@ pub struct App {
 
     // watchlist
     pub watchlist: Vec<MatrixSource>,
+    /// Watchlist stashed by the last destructive transition (preset load /
+    /// Clear All): one-level undo for `u` and `Watchlist: Restore Previous`.
+    pub last_watchlist: Option<Vec<MatrixSource>>,
     pub watchlist_cursor: usize,
     /// Scroll offset (card rows) adjusted by the renderer to keep the cursor
     /// visible; clamped defensively here too.
@@ -146,7 +151,10 @@ pub struct App {
     // modes
     pub mode: Mode,
     pub query: String,
-    pub search_matches: Vec<usize>, // indices into search_all
+    /// Matched topic NAMES (score-ordered). Names, never indices into a
+    /// sorted_names() snapshot: topics announce/unannounce mid-search, and a
+    /// stale index would pin or jump to the WRONG topic.
+    pub search_matches: Vec<String>,
     pub search_cursor: usize,
     pub edit_topic: Option<String>,
     pub edit_input: String,
@@ -189,6 +197,7 @@ impl App {
             tree_cursor: 0,
             focus: Focus::Tree,
             watchlist: Vec::new(),
+            last_watchlist: None,
             watchlist_cursor: 0,
             watchlist_scroll: 0,
             mode: Mode::Normal,
@@ -216,6 +225,19 @@ impl App {
                 format!("config invalid, using defaults ({})", e),
             );
         }
+        // Restore the persisted watchlist (same `prefix/*` glob format the
+        // presets use) so a restart never loses the operator's view. Globs
+        // re-expand live, so cards for topics the robot publishes later are
+        // adopted automatically.
+        app.watchlist = app
+            .config
+            .last_view
+            .iter()
+            .map(|t| match t.strip_suffix("/*") {
+                Some(p) => MatrixSource::Glob(p.to_string()),
+                None => MatrixSource::Topic(t.clone()),
+            })
+            .collect();
         app
     }
 
@@ -268,10 +290,23 @@ impl App {
         Some(fresh)
     }
 
-    /// Drop toasts older than the TTL.
+    /// Drop toasts past their severity-scaled TTL.
     pub fn prune_toasts(&mut self) {
         self.toasts
-            .retain(|t| t.born.elapsed().as_millis() < TOAST_TTL_MS);
+            .retain(|t| t.born.elapsed().as_millis() < Self::toast_ttl_ms(t.kind));
+    }
+
+    /// Severity-scaled toast lifetimes, anchored on TOAST_TTL_MS: transient
+    /// confirmations flash for the base 3.5s, while diagnostics linger —
+    /// an error's reason string is the only record of why something failed,
+    /// and 3.5s is not long enough to read it (let alone notice it after
+    /// glancing back at the robot).
+    fn toast_ttl_ms(kind: ToastKind) -> u128 {
+        match kind {
+            ToastKind::Info | ToastKind::Success => TOAST_TTL_MS,
+            ToastKind::Warn => 6_000,
+            ToastKind::Error => 10_000,
+        }
     }
 
     pub fn toast(&mut self, kind: ToastKind, msg: impl Into<String>) {
@@ -339,15 +374,77 @@ impl App {
             self.watchlist.push(MatrixSource::Glob(path.clone()));
             self.toast(ToastKind::Success, format!("pinned {}/* (subtree)", path));
         }
+        self.persist_watchlist();
         self.clamp_watchlist_cursor();
     }
 
     fn unpin_topic(&mut self, topic: &str) {
+        // Dismissing a glob-covered card removes the WHOLE Glob source —
+        // detect that and say so, instead of a per-topic toast that hides
+        // the real blast radius (every card under the prefix vanishes).
+        let glob_removed: Vec<String> = self
+            .watchlist
+            .iter()
+            .filter_map(|s| match s {
+                MatrixSource::Glob(p) if topic == p || topic.starts_with(&format!("{}/", p)) => {
+                    Some(p.clone())
+                }
+                _ => None,
+            })
+            .collect();
         self.watchlist.retain(|s| match s {
             MatrixSource::Topic(t) => t != topic,
             MatrixSource::Glob(p) => !(topic == p || topic.starts_with(&format!("{}/", p))),
         });
-        self.toast(ToastKind::Info, format!("unpinned {}", topic));
+        if let Some(p) = glob_removed.first() {
+            let pfx = format!("{}/", p);
+            let cards = self
+                .store
+                .sorted_names()
+                .iter()
+                .filter(|n| n.starts_with(&pfx))
+                .count();
+            self.toast(
+                ToastKind::Info,
+                format!("unpinned glob {}/* ({} cards removed)", p, cards),
+            );
+        } else {
+            self.toast(ToastKind::Info, format!("unpinned {}", topic));
+        }
+        self.persist_watchlist();
+    }
+
+    /// Snapshot the watchlist into `config.last_view` (glob `prefix/*` form)
+    /// and save. Called after every mutation so a quit/crash mid-session
+    /// never loses the operator's view.
+    fn persist_watchlist(&mut self) {
+        self.config.last_view = self
+            .watchlist
+            .iter()
+            .map(|s| match s {
+                MatrixSource::Topic(t) => t.clone(),
+                MatrixSource::Glob(p) => format!("{}/*", p),
+            })
+            .collect();
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Warn, format!("save config: {}", e));
+        }
+    }
+
+    /// Restore the watchlist stashed by the last destructive transition
+    /// (preset load / Clear All). One level only — the slot is consumed.
+    fn restore_previous_watchlist(&mut self) {
+        match self.last_watchlist.take() {
+            Some(prev) => {
+                self.watchlist = prev;
+                self.watchlist_cursor = 0;
+                self.watchlist_scroll = 0;
+                self.clamp_watchlist_cursor();
+                self.toast(ToastKind::Success, "watchlist restored");
+                self.persist_watchlist();
+            }
+            None => self.toast(ToastKind::Warn, "nothing to restore"),
+        }
     }
 
     pub fn clamp_watchlist_cursor(&mut self) {
@@ -425,9 +522,19 @@ impl App {
     // ------------------------------------------------------------------
 
     pub fn handle_key(&mut self, key: KeyEvent) -> UiAction {
-        // Ctrl-C always quits.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return UiAction::Quit;
+            // Ctrl-C carries shell "cancel" muscle memory: in text-entry
+            // modes it cancels the input exactly like Esc (a stray Ctrl-C
+            // mid-edit must not quit and lose unpinned work); outside them
+            // it quits.
+            return match self.mode {
+                Mode::Search | Mode::Edit | Mode::Connect | Mode::Palette | Mode::Prompt => {
+                    self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+                }
+                Mode::Normal | Mode::PickTarget | Mode::PickPreset | Mode::SettingsView => {
+                    UiAction::Quit
+                }
+            };
         }
 
         match self.mode {
@@ -476,6 +583,13 @@ impl App {
                 self.apply_preset(c.to_digit(10).unwrap() as usize - 1);
                 return UiAction::None;
             }
+            KeyCode::Char('u') => {
+                // One-level undo for the last destructive watchlist
+                // transition (preset load / Clear All). Global, like the
+                // preset digits, so it works from either pane.
+                self.restore_previous_watchlist();
+                return UiAction::None;
+            }
             _ => {}
         }
         match self.focus {
@@ -509,11 +623,27 @@ impl App {
             }
 
             // h toggles: collapsed dir unfolds, expanded dir folds. l and
-            // Enter are aliases so the fold direction never has to be
+            // Left/Right are aliases so the fold direction never has to be
             // memorized.
-            KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Left | KeyCode::Right
-            | KeyCode::Enter => {
+            KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Left | KeyCode::Right => {
                 self.toggle_fold();
+            }
+
+            // Enter edits the cursor topic, as the README keymap documents
+            // and the watchlist pane already does; on a directory it folds
+            // like h/l.
+            KeyCode::Enter => {
+                if let Some((path, is_topic)) = self.cursor_path() {
+                    if is_topic {
+                        if self.is_writable(&path) {
+                            self.begin_edit_topic(path);
+                        } else {
+                            self.toast(ToastKind::Error, "topic type not editable");
+                        }
+                    } else {
+                        self.toggle_fold();
+                    }
+                }
             }
 
             KeyCode::Tab | KeyCode::BackTab => {
@@ -537,6 +667,7 @@ impl App {
                         self.watchlist.push(src);
                         self.toast(ToastKind::Success, format!("pinned {} to watchlist", path));
                     }
+                    self.persist_watchlist();
                     self.clamp_watchlist_cursor();
                 }
             }
@@ -560,7 +691,9 @@ impl App {
         let cells = self.watchlist_cells();
         let n = cells.len();
         if n == 0 {
-            // Only Tab/Esc leave the empty canvas.
+            // Card keys are all dead on an empty canvas, but the global
+            // keys (q / / : c 1-9) still work — handle_normal intercepts
+            // them before focus dispatch. Tab/Esc return focus to the tree.
             if matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc) {
                 self.focus = Focus::Tree;
             }
@@ -651,6 +784,10 @@ impl App {
     }
 
     fn load_preset_topics(&mut self, name: &str, topics: &[String]) {
+        // Stash the replaced view so `u` / Restore Previous can bring it
+        // back — a stray preset digit must never be a one-way door.
+        self.last_watchlist = Some(self.watchlist.clone());
+        let replaced = self.watchlist_cells().len();
         self.watchlist = topics
             .iter()
             .map(|t| {
@@ -665,48 +802,60 @@ impl App {
         self.watchlist_scroll = 0;
         self.focus = Focus::Watchlist;
         let n = self.watchlist_cells().len();
-        self.toast(ToastKind::Success, format!("preset {}: {} card(s)", name, n));
+        if replaced > 0 {
+            self.toast(
+                ToastKind::Success,
+                format!(
+                    "preset {}: {} card(s) (replaced {} — restore available)",
+                    name, n, replaced
+                ),
+            );
+        } else {
+            self.toast(ToastKind::Success, format!("preset {}: {} card(s)", name, n));
+        }
+        self.persist_watchlist();
     }
 
     fn handle_search(&mut self, key: KeyEvent) -> UiAction {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
+            // Space (Tab is a one-handed alias) pins the highlighted match
+            // to the watchlist directly, then advances to the next match.
             KeyCode::Char(' ') | KeyCode::Tab => {
-                // Pin the highlighted match to the watchlist directly.
-                if let Some(&idx) = self.search_matches.get(self.search_cursor) {
-                    let names = self.store.sorted_names();
-                    if let Some(topic) = names.get(idx).cloned() {
-                        if self.is_pinned(&topic) {
-                            self.unpin_topic(&topic);
-                        } else {
-                            self.watchlist.push(MatrixSource::Topic(topic.clone()));
-                            self.toast(ToastKind::Success, format!("pinned {}", topic));
-                        }
+                if let Some(topic) = self.search_matches.get(self.search_cursor).cloned() {
+                    if self.is_pinned(&topic) {
+                        self.unpin_topic(&topic);
+                    } else {
+                        self.watchlist.push(MatrixSource::Topic(topic.clone()));
+                        self.toast(ToastKind::Success, format!("pinned {}", topic));
+                        self.persist_watchlist();
                     }
                 }
-                let n = self.search_matches.len();
-                self.search_cursor = (self.search_cursor + 1).min(n.saturating_sub(1));
+                // Stop at the last match instead of clamping: pinning is a
+                // toggle, so stepping past the end would un-pin it again.
+                if self.search_cursor + 1 < self.search_matches.len() {
+                    self.search_cursor += 1;
+                }
             }
             KeyCode::Enter => {
-                if let Some(&idx) = self.search_matches.get(self.search_cursor) {
-                    let names = self.store.sorted_names();
-                    if let Some(topic) = names.get(idx).cloned() {
-                        self.expand_ancestors(&topic);
-                        self.mode = Mode::Normal;
-                        self.focus = Focus::Tree;
-                        // Place the cursor on the topic row.
-                        let rows = crate::ui::tree::build_tree(&self.store, &self.expanded);
-                        if let Some(pos) = rows.iter().position(|r| r.is_topic && r.path == topic) {
-                            self.tree_cursor = pos;
-                        }
+                if let Some(topic) = self.search_matches.get(self.search_cursor).cloned() {
+                    self.expand_ancestors(&topic);
+                    self.mode = Mode::Normal;
+                    self.focus = Focus::Tree;
+                    // Place the cursor on the topic row.
+                    let rows = crate::ui::tree::build_tree(&self.store, &self.expanded);
+                    if let Some(pos) = rows.iter().position(|r| r.is_topic && r.path == topic) {
+                        self.tree_cursor = pos;
                     }
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            // Arrows only: j/k are typed into the query, not movement —
+            // topic names contain those letters ("SparkMax").
+            KeyCode::Down => {
                 self.search_cursor = (self.search_cursor + 1)
                     .min(self.search_matches.len().saturating_sub(1));
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.search_cursor = self.search_cursor.saturating_sub(1);
             }
             KeyCode::Backspace => {
@@ -728,11 +877,12 @@ impl App {
                 self.mode = Mode::Normal;
                 self.palette_query.clear();
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            // Arrows only: j/k are typed into the query, not movement.
+            KeyCode::Down => {
                 self.palette_cursor = (self.palette_cursor + 1)
                     .min(self.palette_matches.len().saturating_sub(1));
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.palette_cursor = self.palette_cursor.saturating_sub(1);
             }
             KeyCode::Enter => {
@@ -772,11 +922,22 @@ impl App {
                 UiAction::Client(ClientCommand::Reconnect)
             }
             Command::WatchlistClear => {
+                // Destructive but recoverable: stash for `u` / Restore Previous
+                // instead of a y/n prompt (faster in the pit).
+                self.last_watchlist = Some(self.watchlist.clone());
                 let n = self.watchlist.len();
                 self.watchlist.clear();
                 self.watchlist_cursor = 0;
                 self.watchlist_scroll = 0;
-                self.toast(ToastKind::Success, format!("watchlist cleared ({} card(s))", n));
+                self.toast(
+                    ToastKind::Success,
+                    format!("watchlist cleared ({} card(s)) — restore available", n),
+                );
+                self.persist_watchlist();
+                UiAction::None
+            }
+            Command::WatchlistRestorePrevious => {
+                self.restore_previous_watchlist();
                 UiAction::None
             }
             Command::CopyTopicPath => {
@@ -871,10 +1032,25 @@ impl App {
                         self.edit_topic = None;
                         self.edit_input.clear();
                         self.edit_error = None;
-                        self.toast(
-                            ToastKind::Success,
-                            format!("published {} = {}", topic, v.format()),
-                        );
+                        // Honesty: the client re-queues offline publishes for
+                        // the next successful session, so claiming
+                        // "published" while disconnected would be a lie the
+                        // pit crew acts on. Warn that it is queued instead.
+                        if self.connected {
+                            self.toast(
+                                ToastKind::Success,
+                                format!("published {} = {}", topic, v.format()),
+                            );
+                        } else {
+                            self.toast(
+                                ToastKind::Warn,
+                                format!(
+                                    "queued {} = {} — offline, will send on reconnect",
+                                    topic,
+                                    v.format()
+                                ),
+                            );
+                        }
                         return UiAction::Client(ClientCommand::Publish { topic, value: v });
                     }
                     Err(e) => {
@@ -891,8 +1067,12 @@ impl App {
     }
 
     /// Connection Picker: select a saved target or type a fresh one.
-    /// Single purpose — connect. Digits 1-9 quick-jump, Enter confirms,
-    /// Esc cancels. No add/edit/delete here (Settings owns management).
+    /// Single purpose — connect. Enter confirms, Esc cancels. No
+    /// add/edit/delete here (Settings owns management). Digits are
+    /// ORDINARY input: addresses and team numbers start with digits, so
+    /// any bare-digit quick-jump would hijack the first keystroke of
+    /// exactly the text it must never touch. Selection moves with
+    /// arrows; Enter connects.
     fn handle_connect(&mut self, key: KeyEvent) -> UiAction {
         let targets = self.config.picker_targets();
         match key.code {
@@ -903,16 +1083,12 @@ impl App {
             KeyCode::Backspace => {
                 self.connect_input.pop();
             }
-            // Quick jump: digit selects AND connects immediately — but only
-            // while the input is empty, so typed addresses starting with a
-            // digit are not hijacked.
-            // Digits are ordinary input here: addresses start with digits,
-            // so quick-jump-on-digit would hijack free-text typing. Selection
-            // moves with j/k/arrows; Enter connects input or selection.
-            KeyCode::Down | KeyCode::Char('j') => {
+            // Arrows only: j/k are typed into the address, not movement
+            // (hostnames contain those letters).
+            KeyCode::Down => {
                 self.connect_cursor = (self.connect_cursor + 1).min(targets.len().saturating_sub(1));
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.connect_cursor = self.connect_cursor.saturating_sub(1);
             }
             KeyCode::Enter => {
@@ -941,6 +1117,19 @@ impl App {
         // next Connecting update owns the HUD.
         self.disconnect_reason = None;
         self.target = target.clone();
+        // The new target is (almost always) a different robot: keeping the
+        // old store would render the previous robot's ghost topics, frozen
+        // values and wrong topic count — and first/last_server_ts from two
+        // servers would make UPTIME meaningless. Start clean; the watchlist
+        // survives, globs re-expand as the new robot publishes, and stale
+        // explicit pins simply show "-" until re-announced (or forever for
+        // topics this robot never has — acceptable, visible as a dead card).
+        self.store.topics.clear();
+        self.first_server_ts = None;
+        self.last_server_ts = None;
+        self.last_value_at = None;
+        self.tree_cursor = 0;
+        self.clamp_watchlist_cursor();
         self.toast(ToastKind::Info, format!("connecting to {}...", target));
         UiAction::Client(ClientCommand::Retarget(target))
     }
@@ -1119,19 +1308,20 @@ impl App {
     }
 
     fn recompute_matches(&mut self) {
+        // Matches are stored as NAMES and resolved fresh at act-time —
+        // see the field comment.
         if self.query.is_empty() {
-            self.search_matches = (0..self.store.topics.len()).collect();
+            self.search_matches = self.store.sorted_names();
             return;
         }
         let matcher = SkimMatcherV2::default();
         let names = self.store.sorted_names();
-        let mut scored: Vec<(i64, usize)> = names
-            .iter()
-            .enumerate()
-            .filter_map(|(i, n)| matcher.fuzzy_match(n, &self.query).map(|s| (s, i)))
+        let mut scored: Vec<(i64, String)> = names
+            .into_iter()
+            .filter_map(|n| matcher.fuzzy_match(&n, &self.query).map(|s| (s, n)))
             .collect();
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-        self.search_matches = scored.into_iter().map(|(_, i)| i).collect();
+        self.search_matches = scored.into_iter().map(|(_, n)| n).collect();
         self.search_cursor = 0;
     }
 
@@ -1175,6 +1365,10 @@ fn parse_value(s: &str, hint: Option<NtType>) -> Result<NtValue, String> {
             .map(NtValue::Double)
             .map_err(|_| format!("not a number: {}", s)),
         Some(NtType::Str) => Ok(NtValue::Str(s.to_string())),
+        // Explicit boolean failure BEFORE the catch-all: a bool topic IS
+        // editable, so "only boolean/int/double/string topics are editable"
+        // reads as a lie when it is the INPUT (not the topic) that is invalid.
+        Some(NtType::Boolean) => Err("enter true or false".into()),
         None => {
             // Unknown type: try int, then double, then string.
             if let Ok(i) = s.parse::<i64>() {

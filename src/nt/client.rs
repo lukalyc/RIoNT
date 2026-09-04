@@ -214,19 +214,35 @@ pub async fn run_client(
     // the top of the next loop iteration.
     let retarget_to: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut attempt: u32 = 0;
+    // Suppress duplicate-failure toasts: an unreachable target retries with
+    // the SAME reason every ~6.5s forever, which would churn the UI's
+    // 4-slot stack and evict everything else. A Disconnected update fires
+    // only when the reason changes (or after a session that had actually
+    // connected — a fresh drop after a live link is new information). The
+    // HUD keeps the persistent surface (reason + attempt count).
+    let mut last_reason: Option<String> = None;
     loop {
         updates
             .send(NtUpdate::Connecting { target: target.clone(), attempt })
             .ok();
-        let reason = match session(&target, &updates, &mut commands, &commands_tx, &retarget_to).await {
-            Ok(reason) => reason,
-            Err(e) => e.to_string(),
+        let outcome = session(&target, &updates, &mut commands, &commands_tx, &retarget_to).await;
+        // Ok = the session got connected before dying; Err = it never did
+        // (connect-phase failure). The reason string is the same either way.
+        let (reason, had_connected) = match outcome {
+            Ok(reason) => (reason, true),
+            Err(e) => (e.to_string(), false),
         };
         // A deliberate retarget, manual reconnect, or restart-during-connect
         // is not a disconnect; don't report them as one so the UI's HUD
         // state stays up.
-        if reason != "retarget" && reason != "reconnect requested" && reason != "restart during connect" {
-            updates.send(NtUpdate::Disconnected(reason)).ok();
+        if reason != "retarget" && reason != "reconnect requested" && reason != "restart during connect"
+            && last_reason.as_deref() != Some(reason.as_str())
+        {
+            updates.send(NtUpdate::Disconnected(reason.clone())).ok();
+        }
+        last_reason = Some(reason);
+        if had_connected {
+            last_reason = None;
         }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(1500)) => {}
@@ -254,7 +270,9 @@ pub async fn run_client(
     }
 }
 
-/// One full session over WebSocket. Returns Err(reason) when it dies.
+/// One full session over WebSocket. Returns Ok(reason) if the session had
+/// been connected when it died, Err(reason) if it never got past the
+/// connect phase — the reason string is the death cause either way.
 async fn session(
     target: &str,
     updates: &UnboundedSender<NtUpdate>,
@@ -305,6 +323,10 @@ async fn session(
     };
     let (mut sink, mut stream) = ws.split();
     debug_msg(&mut debug_log, "ws connected");
+    // Ok/Err contract with run_client: Ok means "this session had been
+    // connected when it died", so the caller can reset its dedupe state.
+    // Deferred init: every path that reads it passes the assignment below.
+    let was_connected;
 
     // ---- subscribe to everything, all values, fast periodic.
     let subscribe = json!([{
@@ -323,6 +345,9 @@ async fn session(
         .await
         .map_err(|e| format!("send subscribe: {}", e))?;
     debug_msg(&mut debug_log, "subscribe sent");
+    // Every path from here on had a live link; early returns above never
+    // reach the Ok/Err tail that reads this.
+    was_connected = true;
     updates
         .send(NtUpdate::Connected {
             server_info: "NT4 server".into(),
@@ -495,7 +520,11 @@ async fn session(
     if !buf_values.is_empty() {
         updates.send(NtUpdate::Values(buf_values)).ok();
     }
-    Err(reason)
+    if was_connected {
+        Ok(reason)
+    } else {
+        Err(reason)
+    }
 }
 
 /// ---------------------------------------------------------------------------

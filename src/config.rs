@@ -33,6 +33,11 @@ impl Default for SystemSettings {
 pub struct Config {
     #[serde(default)]
     pub last_target: Option<String>,
+    /// The last live watchlist, persisted after every mutation so a
+    /// restart/quit never loses the operator's view. Same format as
+    /// presets: plain topic path, or `prefix/*` for a subtree (glob) pin.
+    #[serde(default)]
+    pub last_view: Vec<String>,
     #[serde(default)]
     pub saved_targets: Vec<SavedTarget>,
     /// Workspace presets: name -> topic list. A trailing `/*` subscribes a
@@ -41,6 +46,11 @@ pub struct Config {
     pub presets: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub system: SystemSettings,
+    /// Set by `load()` when the on-disk file failed to parse: the in-memory
+    /// contents are then DEFAULTS, and a later `save()` must not silently
+    /// overwrite the user's (fixable) file with them — see `save()`.
+    #[serde(skip)]
+    pub was_corrupt: bool,
 }
 
 impl Config {
@@ -48,12 +58,14 @@ impl Config {
     pub fn with_defaults() -> Self {
         Config {
             last_target: None,
+            last_view: Vec::new(),
             saved_targets: vec![
                 SavedTarget { name: "Simulation".into(), ip: "127.0.0.1:5810".into() },
                 SavedTarget { name: "USB Tether".into(), ip: "172.22.11.2".into() },
             ],
             presets: std::collections::BTreeMap::new(),
             system: SystemSettings::default(),
+            was_corrupt: false,
         }
     }
 
@@ -69,12 +81,17 @@ impl Config {
     }
 
     /// Load the config; missing file -> defaults. A malformed file also
-    /// yields defaults (the caller warns) so a typo can never brick the UI.
+    /// yields defaults (the caller warns) so a typo can never brick the UI —
+    /// but it is flagged `was_corrupt` so `save()` protects the file.
     pub fn load() -> (Config, Option<String>) {
         match std::fs::read_to_string(Self::path()) {
             Ok(txt) => match serde_json::from_str(&txt) {
                 Ok(c) => (c, None),
-                Err(e) => (Config::with_defaults(), Some(e.to_string())),
+                Err(e) => {
+                    let mut c = Config::with_defaults();
+                    c.was_corrupt = true;
+                    (c, Some(e.to_string()))
+                }
             },
             Err(_) => (Config::with_defaults(), None),
         }
@@ -82,6 +99,19 @@ impl Config {
 
     pub fn save(&self) -> Result<(), String> {
         let path = Self::path();
+        // Data-loss guard: if this in-memory config came from the
+        // defaults-on-parse-error path, writing it would replace the
+        // user's (fixable) file with defaults. Back the original up to
+        // config.json.bak first; if it parses now the user already fixed
+        // it in $EDITOR, and a plain overwrite of a valid file is fine.
+        if self.was_corrupt {
+            if let Ok(txt) = std::fs::read_to_string(&path) {
+                if serde_json::from_str::<Config>(&txt).is_err() {
+                    let bak = path.with_extension("json.bak");
+                    std::fs::copy(&path, &bak).map_err(|e| e.to_string())?;
+                }
+            }
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

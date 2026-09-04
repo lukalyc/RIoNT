@@ -88,13 +88,26 @@ class Tui:
         except Exception:
             pass
 
+    # Whole-key word tokens the driver understands (arrows): overlays
+    # navigate by arrows now that j/k are plain input there.
+    WORD_TOKENS = ("UP", "DOWN", "LEFT", "RIGHT")
+
     def send(self, keys):
         """Send keys: one char = one key press. Control chars are encoded as
-        tokens (RET/ESC/TAB/SPC) because stdin lines strip CRLF."""
+        tokens (RET/ESC/TAB/SPC) because stdin lines strip CRLF. Arrow keys
+        are sent as whole words ("DOWN"), optionally space-separated."""
         if not self.alive:
             return
-        token_map = {"\r": "RET", "\x1b": "ESC", "\t": "TAB", " ": "SPC"}
-        parts = [token_map.get(c, c) for c in keys]
+        if keys in self.WORD_TOKENS:
+            parts = [keys]
+        elif keys == " ":
+            parts = ["SPC"]
+        elif " " in keys:
+            # Space-separated: keep only whole-word tokens.
+            parts = [p for p in keys.split(" ") if p in self.WORD_TOKENS]
+        else:
+            token_map = {"\r": "RET", "\x1b": "ESC", "\t": "TAB", " ": "SPC"}
+            parts = [token_map.get(c, c) for c in keys]
         try:
             self.proc.stdin.write(("\x1f".join(parts) + "\n").encode())
             self.proc.stdin.flush()
@@ -337,7 +350,12 @@ def main():
     # T8: focus cycle + status hints -------------------------------------------
     tui.send("\t")
     tui.pump(0.4)
-    check("T8a watchlist hints after tab", "x remove" in tui.lines()[-1], tui.lines()[-1])
+    # Empty canvas: the hint line drops the dead card keys (x/e/spc) and
+    # keeps only what works — the reviewed fix for advertising dead keys.
+    last_line = tui.lines()[-1]
+    check("T8a watchlist hints after tab",
+          "tab tree" in last_line and "1-9 presets" in last_line and "x remove" not in last_line,
+          last_line)
     tui.send("\t")
     tui.pump(0.4)
     check("T8b tree hints back (two-way tab)", "h fold" in tui.lines()[-1], tui.lines()[-1])
@@ -492,7 +510,9 @@ def main():
     tui.pump(0.3)
     txt = tui.text()
     check("T16a picker opens", "[CONNECT TARGET]" in txt and "connect to:" in txt, txt)
-    check("T16b saved targets listed", "[1] Simulation" in txt and "[2] USB Tether" in txt, txt)
+    # No [n] index prefixes (digits are input — see the picker render):
+    # rows are plain name + address.
+    check("T16b saved targets listed", "Simulation" in txt and "USB Tether" in txt and "[1]" not in txt, txt)
     tui.send("127.0.0.1:5814")
     tui.pump(0.3)
     tui.send("\r")
@@ -585,9 +605,11 @@ def main():
     check("T23d settings view overlay", "SETTINGS" in txt and "ssh_user=admin" in txt, txt[-900:])
     tui.send("\x1b"); tui.pump(0.3)
     # T23f: palette Enter must run the HIGHLIGHTED entry, not the top match
-    # (regression: every command opened the config editor).
+    # (regression: every command opened the config editor). j/k are typed
+    # input in the palette now ("SparkMax"-style queries), so move with a
+    # real arrow key.
     tui.send(":"); tui.pump(0.3)
-    tui.send("j"); tui.pump(0.2)   # cursor -> 'Settings: View Settings'
+    tui.send("DOWN"); tui.pump(0.2)  # cursor -> 'Settings: View Settings'
     tui.send("\r"); tui.pump(0.4)
     txt = tui.text()
     check("T23f palette runs highlighted entry", "SETTINGS" in txt, txt[-900:])

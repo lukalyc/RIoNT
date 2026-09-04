@@ -127,18 +127,46 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(true);
     let amber_style = Style::default().fg(AMBER).add_modifier(Modifier::BOLD);
 
+    // The client already knows WHY the link dropped — surface the reason
+    // and the retry count instead of blinking amber forever with no
+    // diagnosis. State strings are left-ellipsized to the comm budget so
+    // the diagnostic tail (the actionable part) survives narrow terminals.
+    let reason = app.disconnect_reason.clone().unwrap_or_default();
+    let comm_budget = (area.width as usize).saturating_sub(75).clamp(20, 48);
     let comm = if app.connected {
         Span::styled(
             format!("ONLINE ({})", ip),
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )
-    } else if app.connecting && app.retry_attempt > 0 {
-        if blink_on {
-            Span::styled("RECONNECTING...", amber_style)
+    } else if app.retry_attempt > 0 {
+        // Retry loop: attempt count plus the last failure reason. The state
+        // keyword is rendered WHOLE — ellipsizing the full label could drop
+        // "RECONNECTING" itself on long Windows error strings — and only
+        // the reason is left-ellipsized into the remaining budget (the
+        // actionable tail of long reasons survives).
+        let kw = format!("RECONNECTING (attempt {})", app.retry_attempt);
+        let label = if reason.is_empty() {
+            kw
         } else {
-            dim("RECONNECTING...")
+            let rem = comm_budget.saturating_sub(kw.chars().count() + 1);
+            format!("{} {}", kw, ellipsize_left(&reason, rem))
+        };
+        if blink_on {
+            Span::styled(label, amber_style)
+        } else {
+            dim(label)
         }
+    } else if !reason.is_empty() {
+        // Just dropped, retry counter not yet ticking: the red state the
+        // README promises, finally reachable — and carrying the cause.
+        // Same keyword-first rule as above: "DISCONNECTED" never ellipsized.
+        let rem = comm_budget.saturating_sub("DISCONNECTED".chars().count() + 3);
+        Span::styled(
+            format!("DISCONNECTED — {}", ellipsize_left(&reason, rem)),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
     } else if app.connecting {
+        // First connect: no reason yet, no attempt — plain amber.
         Span::styled("RECONNECTING...", amber_style)
     } else {
         Span::styled("DISCONNECTED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
@@ -229,6 +257,7 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
 
     let rows = tree::build_tree(&app.store, &app.expanded);
     let pinned = app_pinned(app);
+    let globbed = app_glob_pinned(app);
 
     let height = inner.height as usize;
     let start = if rows.len() > height {
@@ -269,9 +298,13 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     dim(format!(" [{}] ", ty))
                 };
-                // Amber star marks topics pinned to the watchlist.
+                // Amber bold star = direct pin; dim star = covered by a
+                // subtree (glob) pin — so the tree shows inherited pins too
+                // and Space/x on them is never a surprise.
                 let star = if pinned.contains(&row.path) {
                     Span::styled("* ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
+                } else if globbed.contains(&row.path) {
+                    Span::styled("* ", Style::default().fg(MUTED))
                 } else {
                     plain("")
                 };
@@ -315,6 +348,24 @@ fn app_pinned(app: &App) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Topics covered by a subtree (glob) pin — rendered with a dim star so
+/// they are visually distinct from direct pins. Computed once per frame
+/// alongside `app_pinned`.
+fn app_glob_pinned(app: &App) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for s in &app.watchlist {
+        if let MatrixSource::Glob(p) = s {
+            let pfx = format!("{}/", p);
+            for n in app.store.sorted_names() {
+                if n.starts_with(&pfx) {
+                    out.insert(n);
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // inspector dock (35% W, 30% H) — strictly passive
 // ---------------------------------------------------------------------------
@@ -328,9 +379,21 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(block, area);
 
     let w = inner.width as usize;
-    let (path, is_topic) = app
-        .cursor_path()
-        .unwrap_or_else(|| (String::new(), false));
+    // Mirror the EFFECTIVE active topic: with focus on the watchlist the
+    // tree cursor is stale, yet every active command (e/edit, copy path)
+    // acts on the card — so the dock shows the card's topic there. The
+    // dock stays strictly passive; only WHAT it mirrors changes.
+    let (path, is_topic) = if app.focus == Focus::Watchlist {
+        // Canvas rows are always topics; an empty canvas shows the
+        // no-selection state.
+        match app.active_topic() {
+            Some(t) => (t, true),
+            None => (String::new(), false),
+        }
+    } else {
+        app.cursor_path()
+            .unwrap_or_else(|| (String::new(), false))
+    };
 
     let mut lines: Vec<Line> = Vec::new();
     if path.is_empty() {
@@ -735,12 +798,18 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
 // ---------------------------------------------------------------------------
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Hints list only keys that work in the current state — the empty
+    // canvas drops its dead card keys (h/j/k/l, x, e, spc) instead of
+    // advertising them.
     let hints = match app.focus {
         Focus::Tree => {
-            "j/k move  h fold  spc pin  / find  e edit  tab watchlist  1-9 presets  : commands  c connect  q quit"
+            "j/k move  h fold  spc pin  / find  e edit  tab watchlist  g/G ends  1-9 presets  : commands  c connect  q quit"
+        }
+        Focus::Watchlist if app.watchlist.is_empty() => {
+            "tab tree  1-9 presets  / find  : commands  c connect  q quit"
         }
         Focus::Watchlist => {
-            "h/j/k/l move  x remove  e edit  spc unpin  tab tree  : commands  q quit"
+            "h/j/k/l move  x remove  e edit  spc unpin  tab tree  g/G ends  1-9 presets  : commands  q quit"
         }
     };
     f.render_widget(Paragraph::new(Line::from(vec![dim(hints)])), area);
@@ -754,31 +823,40 @@ fn draw_search(f: &mut Frame, app: &App) {
     let area = centered_rect(f.area(), 60, 14);
     f.render_widget(Clear, area);
 
-    let names = app.store.sorted_names();
+    // Glob-aware pinned count: is_pinned honors subtree pins, so the old
+    // Topic-only count under-counted — the title said "0 pinned" while
+    // the rows showed amber stars.
     let pinned_n = app
-        .watchlist
+        .store
+        .sorted_names()
         .iter()
-        .filter(|s| matches!(s, MatrixSource::Topic(_)))
+        .filter(|n| app.is_pinned(n))
         .count();
     let title = if pinned_n == 0 {
-        " search — space pins to watchlist ".to_string()
+        " search — space/tab pin · enter jump · esc close ".to_string()
     } else {
-        format!(" search — {} pinned ", pinned_n)
+        format!(" search — {} pinned · space/tab pin · enter jump · esc close ", pinned_n)
     };
     let mut lines: Vec<Line> = vec![Line::from(vec![plain("/"), bold(app.query.clone())])];
+    // Never a silent blank box (the palette shows "no matching commands";
+    // search owes the same courtesy).
+    if app.search_matches.is_empty() {
+        lines.push(Line::from(dim("no matches")));
+    }
     let visible = area.height as usize - 2;
     let start = app
         .search_cursor
         .saturating_sub(visible.saturating_sub(2))
         .min(app.search_matches.len().saturating_sub(1));
-    for (i, &idx) in app
+    // search_matches holds NAMES (not indices): a topic announcing between
+    // keystrokes cannot shift the list under the cursor.
+    for (i, name) in app
         .search_matches
         .iter()
         .skip(start)
         .take(visible.saturating_sub(1))
         .enumerate()
     {
-        let name = &names[idx];
         let row = start + i;
         let mark = if app.is_pinned(name) {
             Span::styled("* ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
@@ -798,42 +876,60 @@ fn draw_search(f: &mut Frame, app: &App) {
 }
 
 /// Inline edit prompt pinned to the bottom of the screen:
-/// `Set limelight-front/tv: [ 1.0000 ]`
+/// `Set limelight-front/tv: [ 1.0000_ ]` over a dim `type · current:` row.
 fn draw_edit(f: &mut Frame, app: &App) {
     let root = f.area();
     let w = root.width.min(90);
+    // 5 rows: 2 borders + input line + type/current line + error line. The
+    // parse error gets its OWN row so a long topic path can never push it
+    // off-screen (the error is the point of the screen); showing the type
+    // and current value lets the operator compose the new value without
+    // memorizing either.
     let rect = Rect {
         x: 0,
-        y: root.height.saturating_sub(3),
+        y: root.height.saturating_sub(5),
         width: w,
-        height: 3,
+        height: 5,
     };
     f.render_widget(Clear, rect);
 
     let topic = app.edit_topic.clone().unwrap_or_default();
-    let mut spans = vec![
+    let mut lines = vec![Line::from(vec![
         bold("Set "),
-        plain(topic),
+        plain(topic.clone()),
         plain(":  [ "),
         bold(app.edit_input.clone()),
         plain("_"),
         plain(" ]"),
-    ];
-    if let Some(e) = &app.edit_error {
-        spans.push(err(format!("  {}", e)));
+        dim("   enter=publish  esc=cancel"),
+    ])];
+    if let Some(t) = app.store.topics.get(&topic) {
+        let cur = t
+            .current
+            .as_ref()
+            .map(|v| v.format())
+            .unwrap_or_else(|| "-".into());
+        lines.push(Line::from(dim(format!(
+            "{} · current: {}",
+            t.data_type.as_str(),
+            cur
+        ))));
     }
-    spans.push(dim("   enter=publish  esc=cancel"));
+    if let Some(e) = &app.edit_error {
+        lines.push(Line::from(err(e.clone())));
+    }
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         " set value ",
         Style::default().fg(AMBER),
     ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    f.render_widget(Paragraph::new(Line::from(spans)), inner);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Connection Picker: select and connect only. Saved targets (most recently
-/// used first) with quick-jump numbers plus a free-text input. Zero
+/// used first) plus a free-text input; selection is arrow-based because
+/// digits are ordinary input (addresses start with digits). Zero
 /// management options — that belongs to the Settings commands.
 fn draw_connect(f: &mut Frame, app: &App) {
     let targets = app.config.picker_targets();
@@ -849,6 +945,9 @@ fn draw_connect(f: &mut Frame, app: &App) {
         plain("_"),
     ])];
     for (i, t) in targets.iter().enumerate() {
+        // No [n] index prefixes: digits are ordinary input (addresses
+        // start with digits), so [n] would advertise a shortcut that
+        // must not exist.
         let marker = if i == app.connect_cursor && app.connect_input.is_empty() {
             bold("> ")
         } else {
@@ -856,14 +955,13 @@ fn draw_connect(f: &mut Frame, app: &App) {
         };
         lines.push(Line::from(vec![
             marker,
-            plain(format!("[{}] ", i + 1)),
             plain(format!("{:<14} ", t.name)),
             dim(&t.ip),
         ]));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(dim(
-        "[Enter] Connect   [j/k] Select   [Esc]",
+        "[Enter] Connect   [Arrows] Select   [Esc]",
     )));
 
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
@@ -1080,14 +1178,22 @@ fn toast_color(kind: crate::app::ToastKind) -> Color {
 
 fn draw_toasts(f: &mut Frame, app: &App) {
     let root = f.area();
-    let mut bottom = root.height.saturating_sub(1); // just above the status bar
+    // The inline edit prompt is bottom-anchored and rendered BEFORE the
+    // toasts; during Edit shift the stack up so a toast's Clear can never
+    // erase the prompt (or its parse error) — they share the same rows.
+    let shift = if app.mode == Mode::Edit { 5u16 } else { 0u16 };
+    let mut bottom = root.height.saturating_sub(1 + shift); // just above the status bar
     for toast in app.toasts.iter().rev().take(3) {
         let text = format!("[{}] {}", toast_kind_tag(toast.kind), toast.msg);
-        let w = ((text.chars().count() as u16) + 4).clamp(12, 60);
+        // Clamp to the terminal width (never skip rendering on narrow
+        // terms) and ellipsize to the inner width so long failure reasons
+        // terminate visibly instead of hard-clipping mid-word.
+        let w = ((text.chars().count() as u16) + 4).clamp(12, 60).min(root.width);
         let h = 3u16;
-        if bottom < h || w > root.width {
+        if bottom < h {
             break;
         }
+        let text = ellipsize(&text, (w as usize).saturating_sub(2));
         let rect = Rect {
             x: root.width.saturating_sub(w + 1),
             y: bottom - h,

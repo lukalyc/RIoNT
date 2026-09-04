@@ -93,7 +93,9 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
         )?;
         let (key_tx, key_rx) = tokio::sync::mpsc::unbounded_channel();
         // Keystroke script on stdin: one line per batch of keys, or
-        // "sleep:<ms>" to pause. Lines are processed in order.
+        // "sleep:<ms>" to pause. Lines are processed in order. Arrow keys
+        // (needed since overlays navigate by arrows, not j/k) use the
+        // tokens UP/DOWN/LEFT/RIGHT alongside TAB/RET/ESC/SPC.
         std::thread::spawn(move || {
             use std::io::BufRead;
             let stdin = std::io::stdin();
@@ -111,11 +113,15 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     trace(&format!("input token: {:?}", token));
                     match token {
                         "" => continue,
-                        "TAB" | "RET" | "ESC" | "SPC" => {
+                        "TAB" | "RET" | "ESC" | "SPC" | "UP" | "DOWN" | "LEFT" | "RIGHT" => {
                             let code = match token {
                                 "TAB" => KeyCode::Tab,
                                 "RET" => KeyCode::Enter,
                                 "ESC" => KeyCode::Esc,
+                                "UP" => KeyCode::Up,
+                                "DOWN" => KeyCode::Down,
+                                "LEFT" => KeyCode::Left,
+                                "RIGHT" => KeyCode::Right,
                                 _ => KeyCode::Char(' '),
                             };
                             if key_tx.send(KeyEvent::new(code, KeyModifiers::empty())).is_err() {
@@ -195,8 +201,32 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                             cmd_tx.send(cmd).ok();
                         }
                         UiAction::OpenEditor(path) => {
-                            if let Err(e) = run_editor(&path, &mut terminal, headless) {
-                                app.toast(app::ToastKind::Error, format!("editor: {}", e));
+                            match run_editor(&path, &mut terminal, headless) {
+                                Err(e) => {
+                                    app.toast(app::ToastKind::Error, format!("editor: {}", e));
+                                }
+                                Ok(()) => {
+                                    // The user just saved config.json in
+                                    // $EDITOR: reload it, otherwise the
+                                    // round-trip is a silent no-op until the
+                                    // next launch.
+                                    let (cfg, err) = config::Config::load();
+                                    app.config = cfg;
+                                    match err {
+                                        None => {
+                                            app.toast(app::ToastKind::Success, "config reloaded");
+                                        }
+                                        Some(e) => {
+                                            app.toast(
+                                                app::ToastKind::Error,
+                                                format!(
+                                                    "config invalid: {} — fix before restarting",
+                                                    e
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         }
                         UiAction::None => {}
