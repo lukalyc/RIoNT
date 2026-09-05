@@ -13,6 +13,7 @@ inst.startServer("riont-test-persist.json", "0.0.0.0", 1735, 5814)
 print("NT4 server on 0.0.0.0:5814", flush=True)
 
 sd = inst.getTable("SmartDashboard")
+fms = inst.getTable("FMSInfo")
 swerve = inst.getTable("Swerve")
 fl = swerve.getSubTable("FrontLeft")
 fr = swerve.getSubTable("FrontRight")
@@ -67,5 +68,8 @@ while True:
         [2.0 + 0.8 * math.sin(t * 0.8), 4.105 + 0.4 * math.cos(t * 0.8), 0.0, 0.0, 0.0, 90.0],
     )
     sd.putNumberArray("targetpose", [1.0, 2.0, 0.0, 0.0, 0.0, 45.0])
+
+    # FMS alliance color drives the field-card robot color (blue here).
+    fms.putBoolean("IsRedAlliance", False)
 
     time.sleep(0.05)

@@ -3,13 +3,13 @@
 RIONT (Robot Inspection Over Network Tables) is a keyboard-only NetworkTables
 (NT4) dashboard for FRC. Rust + ratatui.
 
-v0.2.0 presents a persistent two-zone layout: a **35% left control column**
+v0.3.0 presents a persistent two-zone layout: a **35% left control column**
 (collapsible Topic Tree + a passive bottom-left Inspector Dock) and a **65%
 full-height Watchlist Canvas** that auto-packs pinned topics into a
 responsive, type-aware card matrix — under a Driver-Station style HUD.
 
 ```
- RIONT v0.2.0     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+ RIONT v0.3.0     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
 ┌ TOPIC TREE (35% W, 70% H) ┐┌ WATCHLIST CANVAS (65% W, 100% H) ─────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │
@@ -248,6 +248,13 @@ and a muted grey pose trail.
   `Field: Set Alliance Blue` (default, no flip) / `Field: Set Alliance Red`
   mirror field-card x only; stored values and the trail buffer are never
   transformed. It persists in `config.json` (`"field": {"alliance": ...}`).
+- **Colors:** the field perimeter renders bright (always visible);
+  obstacles are tinted by alliance half and `BLUE` / `RED` labels anchor
+  each side of the map. The robot marker takes its color from the exact
+  `FMSInfo/IsRedAlliance` topic — red when true, blue when false, neutral
+  cyan when the topic is absent (practice field, no FMS). This is a
+  display color only — it never flips the rendered geometry (that is the
+  manual alliance setting above).
 - **Trail:** on by default, toggle with `Field: Toggle Trail`; capped at
   300 points / 10 s of server time.
 - **Field size / season map:** the map comes from `config.json` →

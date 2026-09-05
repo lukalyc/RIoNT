@@ -228,6 +228,30 @@ pub fn forced_reading(value: &NtValue) -> Option<crate::pose::PoseReading> {
     }
 }
 
+/// Visual role of a converted wall polyline: the field perimeter, an
+/// obstacle on one alliance half, or nothing (filtered upstream).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallKind {
+    Perimeter,
+    BlueHalf,
+    RedHalf,
+}
+
+/// Classify a polyline by its bbox. A shape spanning ~the whole field is
+/// the perimeter; anything else belongs to whichever half its centroid
+/// sits in (field maps are blue-origin, so left = blue).
+pub fn wall_kind(bbox: (f64, f64, f64, f64), length: f64, width: f64) -> WallKind {
+    let (x0, y0, x1, y1) = bbox;
+    if x1 - x0 > 0.9 * length && y1 - y0 > 0.9 * width {
+        return WallKind::Perimeter;
+    }
+    if (x0 + x1) / 2.0 < length / 2.0 {
+        WallKind::BlueHalf
+    } else {
+        WallKind::RedHalf
+    }
+}
+
 /// Canvas bounds (x, y) that contain the WHOLE field with letterboxing,
 /// preserving field aspect on the braille dot grid. On standard 1:2
 /// character cells the braille grid is square in dot-space, so the drawn
@@ -337,5 +361,17 @@ mod tests {
         let (m, warn) = resolve(&cfg);
         assert!(warn.is_some());
         assert!(!m.walls.is_empty());
+    }
+
+    #[test]
+    fn wall_kind_classifies_perimeter_and_halves() {
+        let (l, w) = (16.54, 8.21);
+        // Full-span polyline = perimeter.
+        assert_eq!(wall_kind((0.0, 0.0, l, w), l, w), WallKind::Perimeter);
+        // Blue-origin: centroid left of center = blue half.
+        assert_eq!(wall_kind((3.0, 2.0, 6.0, 6.0), l, w), WallKind::BlueHalf);
+        assert_eq!(wall_kind((11.0, 2.0, 14.0, 6.0), l, w), WallKind::RedHalf);
+        // A shape crossing the center line is classified by its centroid.
+        assert_eq!(wall_kind((7.0, 2.0, 10.0, 6.0), l, w), WallKind::RedHalf);
     }
 }

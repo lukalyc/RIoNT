@@ -1,4 +1,4 @@
-//! Layout + rendering for the v0.2.0 dashboard.
+//! Layout + rendering for the dashboard.
 //!
 //! Geometry: a 35% left control column (Topic Tree 70% H + passive
 //! Inspector Dock 30% H) and a 65% full-height Watchlist Canvas, under a
@@ -32,6 +32,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MUTED: Color = Color::Rgb(0x7C, 0x6F, 0x64); // rates, deltas, chrome text
 const BORDER_GREY: Color = Color::Rgb(0x3C, 0x38, 0x36); // inactive borders
 const MARK_GREY: Color = Color::Rgb(0x2E, 0x2B, 0x28); // field tape/game-line marks
+/// Field-card palette: the perimeter must be visible on a near-black
+/// background; obstacles are tinted by alliance half; the robot picks its
+/// color from `FMSInfo/IsRedAlliance` (neutral cyan when absent).
+const FIELD_PERIMETER: Color = Color::Rgb(0xB0, 0xA8, 0x9C);
+const FIELD_BLUE: Color = Color::Rgb(0x45, 0x6C, 0x9E);
+const FIELD_RED: Color = Color::Rgb(0x9E, 0x56, 0x45);
+const ROBOT_BLUE: Color = Color::Rgb(0x5D, 0xA9, 0xFF);
+const ROBOT_RED: Color = Color::Rgb(0xFF, 0x5A, 0x4D);
 const AMBER: Color = Color::Rgb(0xFA, 0xBD, 0x2F); // tree focus / strings
 const CYAN: Color = Color::Cyan; // numbers / watchlist focus / array brackets
 
@@ -202,7 +210,9 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let line = Line::from(vec![
-        bold("RIONT v0.2.0"),
+        // Single source of truth: Cargo.toml's `version`, baked in at
+        // compile time. Never hardcode a version string here.
+        bold(format!("RIONT v{}", env!("CARGO_PKG_VERSION"))),
         dim("  [COMM: "),
         comm,
         dim("]"),
@@ -896,6 +906,13 @@ fn render_field_card(
         Vec::new()
     };
     let robot = (fx(reading.x), reading.y);
+    // Alliance color: FMSInfo/IsRedAlliance when present, neutral cyan
+    // otherwise (bench testing — no FMS topic on the practice field).
+    let robot_color = match app.fms_red {
+        Some(true) => ROBOT_RED,
+        Some(false) => ROBOT_BLUE,
+        None => CYAN,
+    };
     let (hdx, hdy) = reading.radians.sin_cos();
     // Triangle marker: ~0.6 m tip, ~0.5 m base — legible at card scale.
     let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
@@ -925,25 +942,49 @@ fn render_field_card(
                     });
                 }
             }
+            // Walls: perimeter bright, obstacles tinted by alliance half.
             for wall in &app.field_map.walls {
+                let color = {
+                    let mut b = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+                    for (x, y) in wall {
+                        b.0 = b.0.min(*x);
+                        b.1 = b.1.min(*y);
+                        b.2 = b.2.max(*x);
+                        b.3 = b.3.max(*y);
+                    }
+                    match crate::field::wall_kind(b, length, app.field_map.width_m) {
+                        crate::field::WallKind::Perimeter => FIELD_PERIMETER,
+                        crate::field::WallKind::BlueHalf => FIELD_BLUE,
+                        crate::field::WallKind::RedHalf => FIELD_RED,
+                    }
+                };
                 for seg in wall.windows(2) {
                     ctx.draw(&CanvasLine {
                         x1: fx(seg[0].0),
                         y1: seg[0].1,
                         x2: fx(seg[1].0),
                         y2: seg[1].1,
-                        color: BORDER_GREY,
+                        color,
                     });
                 }
             }
+            // Alliance side labels — anchored per half, so the USER-SET x
+            // mirror moves them with their side (never auto-inferred).
+            let label_y = app.field_map.width_m / 2.0;
+            ctx.print(fx(0.6), label_y, Span::styled("BLUE", Style::default().fg(ROBOT_BLUE)));
+            ctx.print(
+                fx(length - 3.4),
+                label_y,
+                Span::styled("RED", Style::default().fg(ROBOT_RED)),
+            );
             ctx.layer(); // robot layer paints over the walls
             if !trail.is_empty() {
                 ctx.draw(&Points { coords: &trail, color: MUTED });
             }
             for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
-                ctx.draw(&CanvasLine { x1: a.0, y1: a.1, x2: b.0, y2: b.1, color: CYAN });
+                ctx.draw(&CanvasLine { x1: a.0, y1: a.1, x2: b.0, y2: b.1, color: robot_color });
             }
-            ctx.draw(&Points { coords: &[robot], color: CYAN });
+            ctx.draw(&Points { coords: &[robot], color: robot_color });
         });
     f.render_widget(canvas, canvas_area);
 

@@ -66,7 +66,7 @@ pub enum NtUpdate {
         kind: crate::app::ToastKind,
         msg: String,
     },
-    // The client measures these for clock-synced publishes; the v0.2.0
+    // The client measures these for clock-synced publishes; the current
     // driver-station HUD intentionally does not surface raw rtt/offset.
     #[allow(dead_code)]
     /// Round trip time in ms.

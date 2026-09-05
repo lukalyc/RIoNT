@@ -191,6 +191,10 @@ pub struct App {
     /// Pose-trail dots on field cards (palette `Field: Toggle Trail`).
     pub show_pose_trail: bool,
 
+    /// Alliance color source: `FMSInfo/IsRedAlliance` (exact topic). None
+    /// while the topic is absent — field cards then use a neutral color.
+    pub fms_red: Option<bool>,
+
     /// Active field map (built-in or external JSON). Resolved from config
     /// at startup, on `Field: Cycle Map`, and after a config-editor reload;
     /// cached so the 120 Hz render loop never touches the filesystem.
@@ -239,6 +243,7 @@ impl App {
             palette_cursor: 0,
             toasts: Vec::new(),
             show_pose_trail: true,
+            fms_red: None,
             field_map: crate::field::FieldMap::builtin("2025-reefscape")
                 .expect("default map is built in"),
             retry_attempt: 0,
@@ -278,6 +283,13 @@ impl App {
 
     pub fn apply_values(&mut self, batch: Vec<(String, NtValue, u64)>, now: std::time::Instant) {
         for (name, v, ts) in &batch {
+            // Alliance color for field cards: exact FMS topic, per spec —
+            // never inferred from pose topic names. None = neutral (bench).
+            if name == "FMSInfo/IsRedAlliance" {
+                if let NtValue::Boolean(b) = v {
+                    self.fms_red = Some(*b);
+                }
+            }
             let ts = *ts;
             if self.first_server_ts.is_none() {
                 self.first_server_ts = Some(ts);

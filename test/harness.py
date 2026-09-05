@@ -1,4 +1,4 @@
-"""End-to-end TUI test harness (headless mode) — RIONT v0.2.0 dashboard.
+"""End-to-end TUI test harness (headless mode) — RIONT dashboard.
 
 Runs riont.exe with RIONT_HEADLESS=1: the TUI renders ANSI to stdout
 (fixed 120x36 viewport) and reads a keystroke script on stdin. The harness
@@ -285,7 +285,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version 0.2.0", "RIONT v0.2.0" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.3.0" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
@@ -294,8 +294,12 @@ def main():
     check("T2b tree rows have no values when collapsed", "Battery Voltage" not in txt, txt)
 
     # T3: expand with l -------------------------------------------------------
-    tui.send("l")
-    tui.pump(0.5)
+    # Deterministic focus: search-jump onto Battery Voltage (expands its
+    # ancestor dirs and lands the cursor on the topic row). FMSInfo now
+    # sorts before SmartDashboard, so absolute cursor counts are fragile.
+    tui.send("/"); tui.pump(0.3)
+    tui.send("batt"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.5)
     txt = tui.text()
     check("T3a dir expanded marker", "[-] SmartDashboard" in txt, txt)
     check("T3b children visible", "Battery Voltage" in txt and "kP" in txt, txt)
@@ -325,9 +329,13 @@ def main():
     left_rows = tui.tree_rows()
     check("T5a G jumps to bottom", curG and left_rows and curG[0] == max(left_rows),
           f"curG={curG} bottom={max(left_rows) if left_rows else None}")
-    check("T5b g jumps to top", curg and curg[0] == 2, curg)
+    check("T5b g jumps to top", curg and left_rows and curg[0] == min(left_rows), curg)
 
     # T6: collapse with h ------------------------------------------------------
+    # Back on Battery Voltage first: h on a topic row folds its parent dir.
+    tui.send("/"); tui.pump(0.3)
+    tui.send("batt"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.5)
     tui.send("h")
     tui.pump(0.4)
     check("T6 h collapses dir", "[-] SmartDashboard" not in tui.text() and "[+] SmartDashboard" in tui.text(), tui.text())
@@ -335,11 +343,11 @@ def main():
     tui.pump(0.4)
 
     # T7: passive inspector dock ------------------------------------------------
-    # cursor on row0 (SmartDashboard dir) -> jjj lands on Battery Voltage
-    tui.send("g")
-    tui.pump(0.3)
-    tui.send("jjj")
-    tui.pump(0.5)
+    # The T6 fold shifted/clamped the cursor (rows collapsed above it), so
+    # land on Battery Voltage once more; the dock mirrors it passively.
+    tui.send("/"); tui.pump(0.3)
+    tui.send("batt"); tui.pump(0.4)
+    tui.send("\r"); tui.pump(0.5)
     txt = tui.text()
     check("T7a dock shows full path", "SmartDashboard/Battery Voltage" in txt, txt)
     check("T7b dock shows type", "Type:  double" in txt, txt)

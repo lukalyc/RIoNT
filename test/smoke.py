@@ -1,4 +1,4 @@
-"""Quick visual smoke test of the v0.2.0 layout (headless)."""
+"""Quick visual smoke test of the layout (headless)."""
 import codecs, os, subprocess, sys, threading, time, socket
 
 import pyte
