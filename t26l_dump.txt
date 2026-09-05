@@ -1,23 +1,23 @@
-RIONT v0.5.2  [COMM: ONLINE (127.0.0.1)]  [CODE: RUNNING]  [UPTIME: 00:00:38]  25 topics
+RIONT v0.5.3  [COMM: ONLINE (127.0.0.1)]  [CODE: RUNNING]  [UPTIME: 00:00:38]  25 topics
 ┌ TOPIC TREE ────────────────────────────┐┌ SmartDashboard/botpose_wpiblue +1 ─────────────────────────────────────────┐
 │  Climb Locked [boolean] false 0Hz      ││                                                                            │
 │  Compressor Enabled [boolean] true 0Hz ││                                                                            │
 │  EmitEmptyPose [boolean] false 1Hz     ││                                                                            │
 │  Ephemeral [string] here 0Hz           ││                                                                            │
-│  Gyro Angle [double] 212.5607 22Hz     ││                                                                            │
-│  Match Time [double] 82.3779 2Hz       ││                                                                            │
-│  Shooter RPM [double] 4606.4551 22Hz   ││ ⡖⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⡆ │
+│  Gyro Angle [double] 211.5717 20Hz     ││                                                                            │
+│  Match Time [double] 82.4009 2Hz       ││                                                                            │
+│  Shooter RPM [double] 4602.5748 20Hz   ││ ⡖⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⡆ │
 │  StaleCounter [double] 159.0000 0Hz    ││ ⡇                                                                        ⡇ │
-│  * botpose_wpiblue [double[]] [1.222 4.││ ⡇                                                                        ⡇ │
+│  * botpose_wpiblue [double[]] [1.225 4.││ ⡇                                                                        ⡇ │
 │  kD [double] 0.0030 0Hz                ││ ⡇                                                                        ⡇ │
 │  kI [double] 1.000e-4 0Hz              ││ ⡇                                                                        ⡇ │
 │  kP [double] 0.0120 0Hz                ││ ⡇                                                                        ⡇ │
 │  * targetpose [double[]] [1.000 2.000 0││ ⡇                                   ⢀                                    ⡇ │
 │[-] Swerve                              ││ ⡇    ⢀                           ⣀⠤⠊⠁⠉⠒⢄⡀                          ⢀     ⡇ │
-│  [-] FrontLeft                         ││ ⡇   ⢀⡀⣠⠤⠤⠦⠤ ⡀                   ⢸       ⢸                          ⢸     ⡇ │
-│    Current [double] 16.3653 22Hz       ││ ⡇   ⢸⢸⣕⡢⠄  ⢀⡽                   ⢸       ⢸                          ⢸     ⡇ │
+│  [-] FrontLeft                         ││ ⡇   ⢀⡀⣠⠤⠤⠢⠄ ⡀                   ⢸       ⢸                          ⢸     ⡇ │
+│    Current [double] 15.7421 20Hz       ││ ⡇   ⢸⢸⣕⡢⠄  ⢀⡽                   ⢸       ⢸                          ⢸     ⡇ │
 │    Module Angle [double] 42.5000 0Hz   ││ ⡇   ⠈⠁⠈⠉⠉⠋⠉⠉                    ⠸⣀     ⢀⡸                          ⢸     ⡇ │
-│    Velocity [double] 2.7083 22Hz       ││ ⡇                                 ⠉⠢⢄⠤⠒⠁                                 ⡇ │
+│    Velocity [double] 2.7051 20Hz       ││ ⡇                                 ⠉⠢⢄⠤⠒⠁                                 ⡇ │
 │  [+] FrontRight                        ││ ⡇                                                                        ⡇ │
 │  Module Names [string[]] [FL, FR, RL, R││ ⡇  ⣀⢤⢒⠏                                                                  ⡇ │
 │  Module Velocities [double[]] [3.100 3.││ ⡇  ⠘⢄⠎                                                                   ⡇ │
@@ -26,8 +26,8 @@ RIONT v0.5.2  [COMM: ONLINE (127.0.0.1)]  [CODE: RUNNING]  [UPTIME: 00:00:38]  2
 ┌ INSPECTOR ─────────────────────────────┐│ ⡇            ⢸    ⢸                                                      ⡇ │
 │Path:  SmartDashboard/botpose_wpiblue   ││ ⠓⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠚⠒⠒⠒⠒⠚⠒⠒⠒⠒⠒┌─────────────────────────────────────────────────┐│
 │Type:  double[]      Flags: read        ││                         │[SUCCESS] field card: SmartDashboard/targetpose  ││
-│Rate:  21.5 Hz       Δ 127ms            ││                         └─────────────────────────────────────────────────┘│
-│Value: …4.013 0.000 0.000 0.000 90.000] ││                                              ┌────────────────────────────┐│
+│Rate:  19.5 Hz       Δ 26ms             ││                         └─────────────────────────────────────────────────┘│
+│Value: …4.006 0.000 0.000 0.000 90.000] ││                                              ┌────────────────────────────┐│
 │                                        ││                                              │[SUCCESS] added to overlay  ││
 │                                        ││                                              └────────────────────────────┘│
 │                                        ││                                              ┌────────────────────────────┐│

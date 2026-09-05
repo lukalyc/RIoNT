@@ -3,21 +3,21 @@
 RIONT (Robot Inspection Over Network Tables) is a keyboard-only NetworkTables
 (NT4) dashboard for FRC. Rust + ratatui.
 
-v0.5.2 presents a persistent two-zone layout: a **35% left control column**
-(collapsible Topic Tree + a passive bottom-left Inspector Dock) and a **65%
-full-height Watchlist Canvas** that auto-packs pinned topics into a
-responsive, type-aware card matrix — under a Driver-Station style HUD.
+The layout is driver-station style: a **Topic Tree** with a passive
+**Inspector Dock** on the left, a full-height **Watchlist Canvas** on the
+right, and a one-line status HUD on top. Anything you pin lands on the
+watchlist as a card; everything on screen updates live.
 
 ```
- RIONT v0.5.2     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
-┌ TOPIC TREE (35% W, 70% H) ┐┌ WATCHLIST CANVAS (65% W, 100% H) ─────────────────────────────┐
+ RIONT v0.5.3     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+┌ TOPIC TREE ┐┌ WATCHLIST ───────────────────────────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │
 │   > * tv     [double]     │ │ double   50.0 Hz   Δ 20ms        │ │ double   50.0 Hz      │ │
 │   [+] limelight-rear      │ └──────────────────────────────────┘ └───────────────────────┘ │
 ├───────────────────────────┤ ┌─ StateMachine/ActiveState ───────┐ ┌─ Battery/Voltage ─────┐ │
-│ INSPECTOR DOCK (35% W,    │ │ "INTAKING"                       │ │ 12.42 V               │ │
-│ 30% H) — passive          │ │ string   0.1 Hz    Δ 14.2s       │ │ double   20.0 Hz      │ │
+│ INSPECTOR DOCK — passive  │ │ "INTAKING"                       │ │ 12.42 V               │ │
+│                           │ │ string   0.1 Hz    Δ 14.2s       │ │ double   20.0 Hz      │ │
 └───────────────────────────┘ └──────────────────────────────────┘ └───────────────────────┘ │
 ```
 
@@ -51,7 +51,7 @@ replace the old ones instead of mixing with them. The watchlist survives
 
 ## Layout
 
-- **Top HUD (1 line):** `COMM` (green `ONLINE <ip>` / amber
+- **HUD:** `COMM` (green `ONLINE <ip>` / amber
   `RECONNECTING (attempt N — <reason>)` while retrying — the last failure
   reason and retry count, so an unreachable robot is diagnosable at a
   glance / red `DISCONNECTED — <reason>` for the moment a live link drops,
@@ -65,21 +65,21 @@ replace the old ones instead of mixing with them. The watchlist survives
   Repeated identical failures (e.g. an unreachable target) are not re-toasted
   every retry — the HUD carries them; toasts fire when the reason changes.
   Toast lifetimes scale with severity (info/success 3.5 s, errors 10 s).
-- **Topic Tree (35% W, 70% H):** collapsible namespaces with inline values,
+- **Topic Tree (left):** collapsible namespaces with inline values,
   type tags (green = editable), and stars on pinned topics: bold amber `*`
   for direct pins, dim `*` when covered by a subtree (glob) pin. Folding is
   silent — the tree state is its own feedback. The
   selected row inverts the FULL row (tag, value, rate included), so the
   highlight never clips content. Active pane border: amber (tree) /
   cyan (watchlist); inactive panes use muted grey `#3C3836`.
-- **Inspector Dock (35% W, 30% H):** strictly passive — instantly mirrors
+- **Inspector Dock (bottom left):** strictly passive — instantly mirrors
   the full path, type, flags, rate, Δ and raw value of the tree cursor. No
   Tab navigation needed to read metadata.
-- **Watchlist Canvas (65% W, 100% H):** every pinned topic becomes a
-  bordered card. **Height-first stacking:** column 1 fills 100% of the
-  available height (using each card's real rendered height — arrays wrap
-  to a second sub-row) before column 2 is instantiated, up to 3 columns;
-  capacity recalculates live on terminal resize.
+- **Watchlist (right, full height):** every pinned topic becomes a
+  bordered card, sized by type. Cards stack down the first column until
+  it is full — using each card's real rendered height — then a second
+  column starts, up to three; the packing recalculates live on terminal
+  resize.
 
 ### Card adapters
 
@@ -338,7 +338,7 @@ retransmission, auto-reconnect with retry counter, 5s connect timeout.
 ```
 conda activate nt-tui-test
 python test/server.py    # fake robot: real ntcore NT4 server on 5814
-python test/harness.py   # 81-check end-to-end suite (headless TUI + pyte)
+python test/harness.py   # 97-check end-to-end suite (headless TUI + pyte)
 python test/smoke.py     # visual smoke dump of the RIONT layout
 ```
 

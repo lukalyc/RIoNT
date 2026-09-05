@@ -5,6 +5,13 @@ All notable changes to RIONT are documented here. The format follows
 [Semantic Versioning](https://semver.org/). See `AGENTS.md` for the bump
 procedure — every version bump must include a changelog entry.
 
+## [0.5.3] - 2026-09-05
+
+### Changed
+
+- README rewrite: the layout is described in plain terms (no panel
+  percentage arithmetic); the ASCII mockup matches the real UI.
+
 ## [0.5.2] - 2026-09-05
 
 ### Added
