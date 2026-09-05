@@ -286,7 +286,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version matches Cargo.toml", "RIONT v0.5.3" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.5.4" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
@@ -803,8 +803,6 @@ def main():
     txt = tui.text()
     check("T26l overlay merges two field cards into one",
           "+1" in txt, txt[:500])  
-    open('t26l_dump.txt', 'w', encoding='utf-8').write(txt)  
-    open('t26l_dump.txt', 'w', encoding='utf-8').write(txt)  # composite title: head +1
     check("T26m composite card shows a per-topic legend",
           "botpose_wpiblue" in txt and "targetpose" in txt, txt[:600])
     tui.send("f"); tui.pump(0.5)

@@ -5,6 +5,10 @@ Human contributors should follow them too.
 
 ## Versioning procedure (ALWAYS follow when making changes)
 
+A step-by-step walkthrough of this procedure is available as an agent
+skill: `.agents/skills/version-release/SKILL.md`. Use it; keep the two
+in sync (AGENTS.md wins on any disagreement).
+
 **Every change that lands in a commit must carry a version bump in
 `Cargo.toml`.** The HUD reads the version at compile time
 (`env!("CARGO_PKG_VERSION")` in `src/ui/mod.rs`), so `Cargo.toml` is the
