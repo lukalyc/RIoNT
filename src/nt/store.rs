@@ -161,6 +161,12 @@ pub struct TopicData {
     /// Pose trail for field rendering: (x_m, y_m, server_ts_us). Only
     /// populated for topics that classify as a robot pose (pose::classify).
     pose_trail: VecDeque<(f64, f64, u64)>,
+    /// Sticky pose marker: set the first time this topic classifies as a
+    /// robot pose and never cleared while the topic exists. Pose sources
+    /// legitimately publish NON-pose values between estimates (Limelight
+    /// sends an empty array with no target) — without stickiness the field
+    /// card would flicker on/off every update cycle.
+    pose_sticky: bool,
 }
 
 const HZ_WINDOW: f64 = 2.0;
@@ -183,6 +189,7 @@ impl TopicData {
             last_server_ts: None,
             hz_samples: VecDeque::new(),
             pose_trail: VecDeque::new(),
+            pose_sticky: false,
         }
     }
 
@@ -210,8 +217,11 @@ impl TopicData {
             self.hz_samples.pop_front();
         }
         // Pose trail: only for values that classify (cheap exact-name/type
-        // check); non-pose topics never allocate trail entries.
+        // check); non-pose topics never allocate trail entries. The FIRST
+        // classified value marks the topic as a pose source for good — see
+        // pose_sticky.
         if let Some(p) = crate::pose::classify(&self.name, self.type_str.as_deref(), &v) {
+            self.pose_sticky = true;
             self.pose_trail.push_back((p.x, p.y, server_ts));
             while self.pose_trail.len() > POSE_TRAIL_CAP {
                 self.pose_trail.pop_front();
@@ -229,6 +239,12 @@ impl TopicData {
     /// Pose trail for field rendering (may be empty).
     pub fn pose_trail(&self) -> &VecDeque<(f64, f64, u64)> {
         &self.pose_trail
+    }
+
+    /// True once this topic has EVER classified as a robot pose. See
+    /// pose_sticky: empty/no-estimate updates must not un-field a card.
+    pub fn is_pose_source(&self) -> bool {
+        self.pose_sticky
     }
 
     /// Publish rate in Hz over the last 2s. None if never updated.
@@ -279,5 +295,39 @@ impl Store {
         let mut names: Vec<String> = self.topics.keys().cloned().collect();
         names.sort_unstable();
         names
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pose_sticky_survives_empty_updates() {
+        let now = std::time::Instant::now();
+        let mut td = TopicData::new("SmartDashboard/botpose_wpiblue".into());
+        td.apply(
+            NtValue::DoubleArray(vec![1.0, 2.0, 0.0, 0.0, 0.0, 90.0]),
+            1_000,
+            now,
+        );
+        assert!(td.is_pose_source());
+        // Camera loses its estimate: Limelight publishes an empty array.
+        // The topic must REMAIN a pose source (no card flicker).
+        td.apply(NtValue::DoubleArray(vec![]), 2_000, now);
+        assert!(td.is_pose_source());
+        // A topic that never classified is not sticky.
+        let mut other = TopicData::new("SmartDashboard/Battery Voltage".into());
+        other.apply(NtValue::Double(12.6), 3_000, now);
+        assert!(!other.is_pose_source());
+        // A lookalike name with a valid shape IS sticky (conservative
+        // classifier still refuses it — this is the exact-name path).
+        let mut lookalike = TopicData::new("SmartDashboard/targetpose".into());
+        lookalike.apply(
+            NtValue::DoubleArray(vec![1.0, 2.0, 0.0, 0.0, 0.0, 45.0]),
+            4_000,
+            now,
+        );
+        assert!(!lookalike.is_pose_source());
     }
 }

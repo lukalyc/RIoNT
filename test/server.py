@@ -63,10 +63,15 @@ while True:
 
     # pose sources for the field-card checks: an exact Limelight name
     # (auto-classifies) and a lookalike that must NOT auto-classify.
-    sd.putNumberArray(
-        "botpose_wpiblue",
-        [2.0 + 0.8 * math.sin(t * 0.8), 4.105 + 0.4 * math.cos(t * 0.8), 0.0, 0.0, 0.0, 90.0],
-    )
+    # EmitEmptyPose (set by the harness) simulates the camera losing its
+    # estimate: Limelight then publishes an EMPTY array.
+    if sd.getBoolean("EmitEmptyPose", False):
+        sd.putNumberArray("botpose_wpiblue", [])
+    else:
+        sd.putNumberArray(
+            "botpose_wpiblue",
+            [2.0 + 0.8 * math.sin(t * 0.8), 4.105 + 0.4 * math.cos(t * 0.8), 0.0, 0.0, 0.0, 90.0],
+        )
     sd.putNumberArray("targetpose", [1.0, 2.0, 0.0, 0.0, 0.0, 45.0])
 
     # FMS alliance color drives the field-card robot color (blue here).

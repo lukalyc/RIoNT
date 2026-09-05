@@ -627,7 +627,7 @@ const FIELD_CARD_ROWS: usize = 14;
 
 /// Total terminal lines a card occupies (borders + value line(s) + meta).
 fn card_total_height(app: &App, topic: &str, width: usize) -> u16 {
-    if app.field_reading(topic).is_some() {
+    if app.is_field_card(topic) {
         // 2 borders + canvas rows + meta row.
         return (FIELD_CARD_ROWS + 3) as u16;
     }
@@ -706,11 +706,10 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     // A LONE field card gets the entire canvas (the whole point of the
     // watchlist then is the field); it shrinks back to card size as soon
     // as any other topic is pinned.
-    if cells.len() == 1 {
-        if let Some(reading) = app.field_reading(&cells[0]) {
-            render_field_card(f, app, &cells[0], &reading, area, focused, true);
-            return;
-        }
+    if cells.len() == 1 && app.is_field_card(&cells[0]) {
+        let reading = app.field_reading(&cells[0]);
+        render_field_card(f, app, &cells[0], reading.as_ref(), area, focused, true);
+        return;
     }
 
     let block = Block::default()
@@ -810,8 +809,9 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
 
     let td = app.store.topics.get(topic);
     // Pose field cards: walls + robot marker + trail on a braille canvas.
-    if let Some(reading) = app.field_reading(topic) {
-        render_field_card(f, app, topic, &reading, rect, focused, sel);
+    if app.is_field_card(topic) {
+        let reading = app.field_reading(topic);
+        render_field_card(f, app, topic, reading.as_ref(), rect, focused, sel);
         return;
     }
     let mut lines: Vec<Line> = match td.and_then(|t| t.current.as_ref()) {
@@ -844,7 +844,7 @@ fn render_field_card(
     f: &mut Frame,
     app: &App,
     topic: &str,
-    reading: &crate::pose::PoseReading,
+    reading: Option<&crate::pose::PoseReading>,
     rect: Rect,
     focused: bool,
     sel: bool,
@@ -906,7 +906,7 @@ fn paint_field_canvas(
     area: Rect,
     app: &App,
     topic: &str,
-    reading: &crate::pose::PoseReading,
+    reading: Option<&crate::pose::PoseReading>,
 ) {
     let length = app.field_map.length_m;
     let red = app.config.field.alliance == "red";
@@ -920,7 +920,9 @@ fn paint_field_canvas(
     } else {
         Vec::new()
     };
-    let robot = (fx(reading.x), reading.y);
+    // Between estimates (empty array etc.) the field renders WITHOUT the
+    // robot marker instead of the card disappearing entirely.
+    let robot = reading.map(|r| (fx(r.x), r.y));
     // Alliance color: FMSInfo/IsRedAlliance when present, neutral cyan
     // otherwise (bench testing - no FMS topic on the practice field).
     let robot_color = match app.fms_red {
@@ -928,11 +930,13 @@ fn paint_field_canvas(
         Some(false) => ROBOT_BLUE,
         None => CYAN,
     };
-    let (hdx, hdy) = reading.radians.sin_cos();
+    let (hdx, hdy) = reading
+        .map(|r| r.radians.sin_cos())
+        .unwrap_or((0.0, 1.0));
     // Triangle marker: ~0.6 m tip, ~0.5 m base - legible at card scale.
-    let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
-    let base_l = (robot.0 - 0.25 * hdx - 0.3 * hdy, robot.1 - 0.25 * hdy + 0.3 * hdx);
-    let base_r = (robot.0 - 0.25 * hdx + 0.3 * hdy, robot.1 - 0.25 * hdy - 0.3 * hdx);
+    let tip = robot.map(|(rx, ry)| (rx + 0.6 * hdx, ry + 0.6 * hdy));
+    let base_l = robot.map(|(rx, ry)| (rx - 0.25 * hdx - 0.3 * hdy, ry - 0.25 * hdy + 0.3 * hdx));
+    let base_r = robot.map(|(rx, ry)| (rx - 0.25 * hdx + 0.3 * hdy, ry - 0.25 * hdy - 0.3 * hdx));
 
     // Bounds must contain EVERY wall endpoint: Canvas drops a segment when
     // EITHER endpoint is outside the grid (walls can overshoot the nominal
@@ -1027,10 +1031,20 @@ fn paint_field_canvas(
             if !trail.is_empty() {
                 ctx.draw(&Points { coords: &trail, color: MUTED });
             }
-            for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
-                ctx.draw(&CanvasLine { x1: a.0, y1: a.1, x2: b.0, y2: b.1, color: robot_color });
+            if let (Some(tip), Some(base_l), Some(base_r), Some(robot)) =
+                (tip, base_l, base_r, robot)
+            {
+                for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
+                    ctx.draw(&CanvasLine {
+                        x1: a.0,
+                        y1: a.1,
+                        x2: b.0,
+                        y2: b.1,
+                        color: robot_color,
+                    });
+                }
+                ctx.draw(&Points { coords: &[robot], color: robot_color });
             }
-            ctx.draw(&Points { coords: &[robot], color: robot_color });
         });
     f.render_widget(canvas, area);
 }
@@ -1042,9 +1056,10 @@ fn draw_field_view(f: &mut Frame, app: &App) {
     let Some(topic) = app.field_view.clone() else {
         return;
     };
-    let Some(reading) = app.field_reading(&topic) else {
+    if !app.is_field_card(&topic) {
         return;
-    };
+    }
+    let reading = app.field_reading(&topic);
     let area = centered_rect(f.area(), 96, 94);
     f.render_widget(Clear, area);
     let block = Block::default()
@@ -1067,20 +1082,28 @@ fn draw_field_view(f: &mut Frame, app: &App) {
             Rect { y: inner.y + canvas_h, height: value_h, ..inner },
         )
     };
-    paint_field_canvas(f, canvas_area, app, &topic, &reading);
+    paint_field_canvas(f, canvas_area, app, &topic, reading.as_ref());
 
-    let length = app.field_map.length_m;
-    let dx = if app.config.field.alliance == "red" {
-        length - reading.x
-    } else {
-        reading.x
+    let value = match reading {
+        Some(r) => {
+            let length = app.field_map.length_m;
+            let dx = if app.config.field.alliance == "red" {
+                length - r.x
+            } else {
+                r.x
+            };
+            Line::from(vec![
+                bold(format!("  x: {:.2} m", dx)),
+                bold(format!("   y: {:.2} m", r.y)),
+                bold(format!("   theta: {:.1}\u{b0}", r.radians.to_degrees())),
+                dim("                                    f/Esc close"),
+            ])
+        }
+        None => Line::from(vec![
+            dim("  no pose estimate"),
+            dim("                                    f/Esc close"),
+        ]),
     };
-    let value = Line::from(vec![
-        bold(format!("  x: {:.2} m", dx)),
-        bold(format!("   y: {:.2} m", reading.y)),
-        bold(format!("   theta: {:.1}\u{b0}", reading.radians.to_degrees())),
-        dim("                                    f/Esc close"),
-    ]);
     f.render_widget(Paragraph::new(value), value_area);
 }
 

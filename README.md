@@ -9,7 +9,7 @@ full-height Watchlist Canvas** that auto-packs pinned topics into a
 responsive, type-aware card matrix — under a Driver-Station style HUD.
 
 ```
- RIONT v0.4.0     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+ RIONT v0.4.1     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
 ┌ TOPIC TREE (35% W, 70% H) ┐┌ WATCHLIST CANVAS (65% W, 100% H) ─────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │
@@ -249,6 +249,10 @@ and a muted grey pose trail.
   `Field: Set Alliance Blue` (default, no flip) / `Field: Set Alliance Red`
   mirror field-card x only; stored values and the trail buffer are never
   transformed. It persists in `config.json` (`"field": {"alliance": ...}`).
+- **Sticky pose detection:** pose sources legitimately publish empty
+  arrays between estimates (Limelight with no target). Once a topic has
+  classified as a pose it stays a field card — empty estimates render the
+  field without the robot marker instead of flickering the card away.
 - **Fill + enlarged view:** a lone field card expands to the entire
   watchlist canvas (it shrinks back to card size when other topics are
   pinned). Tab into the watchlist, hover a field card, press `f` — a

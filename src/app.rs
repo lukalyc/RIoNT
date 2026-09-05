@@ -802,7 +802,7 @@ impl App {
             KeyCode::Char('f') => {
                 // Enlarged field view: only meaningful over a field card.
                 if let Some(topic) = cells.get(c).cloned() {
-                    if self.field_reading(&topic).is_some() {
+                    if self.is_field_card(&topic) {
                         self.field_view = Some(topic);
                         self.mode = Mode::FieldView;
                     } else {
@@ -836,11 +836,30 @@ impl App {
         self.edit_error = None;
     }
 
-    /// Is this topic rendered as a pose field card, and what is its
-    /// current reading? True ONLY when the conservative auto-classifier
-    /// accepts the current value, or the user explicitly opted the topic
-    /// in via `Field: Toggle Pose View on Active Card` — lookalike topics
-    /// (target poses, arbitrary double[6]) stay normal value cards.
+    /// Is this topic rendered as a pose field card? Sticky: true once the
+    /// topic has EVER classified as a pose (pose sources legitimately
+    /// publish empty/no-estimate values between fixes — without stickiness
+    /// the card would flicker on every cycle), or the user explicitly
+    /// opted it in via `Field: Toggle Pose View on Active Card`.
+    /// Lookalike topics (target poses, arbitrary double[6]) that never
+    /// classified stay normal value cards.
+    pub fn is_field_card(&self, topic: &str) -> bool {
+        self.store
+            .topics
+            .get(topic)
+            .map(|t| t.is_pose_source())
+            .unwrap_or(false)
+            || self
+                .config
+                .field
+                .force_pose_topics
+                .iter()
+                .any(|t| t == topic)
+    }
+
+    /// The topic's current pose reading, if the current value classifies.
+    /// None between estimates (empty arrays etc.) — the field card then
+    /// renders WITHOUT the robot marker instead of disappearing.
     pub fn field_reading(&self, topic: &str) -> Option<crate::pose::PoseReading> {
         let td = self.store.topics.get(topic)?;
         let v = td.current.as_ref()?;

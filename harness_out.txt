@@ -1,0 +1,98 @@
+server up
+harness client connected
+[PASS] T1a header shows COMM ONLINE
+[PASS] T1b header shows target IP
+[PASS] T1c header shows CODE RUNNING
+[PASS] T1d header shows UPTIME
+[PASS] T1e topic count > 10
+[PASS] T1f no global Hz metric
+[PASS] T1g version matches Cargo.toml
+[PASS] T1g ONLINE rendered bold+green
+[PASS] T2a collapsed root dirs
+[PASS] T2b tree rows have no values when collapsed
+[PASS] T3a dir expanded marker
+[PASS] T3b children visible
+[PASS] T3c inline values in tree
+[PASS] T3d inline Hz in tree
+[PASS] T3e editable tag is green
+[PASS] T4 j moves cursor
+[PASS] T4b cursor highlighted reverse
+[PASS] T5a G jumps to bottom
+[PASS] T5b g jumps to top
+[PASS] T6 h collapses dir
+[PASS] T7a dock shows full path
+[PASS] T7b dock shows type
+[PASS] T7c dock shows rate
+[PASS] T7d dock shows delta
+[PASS] T7e dock shows value
+[PASS] T8a watchlist hints after tab
+[PASS] T8b tree hints back (two-way tab)
+[PASS] T9a search overlay opens
+[PASS] T9b search shows match
+[PASS] T9c jump expanded ancestors
+[PASS] T9d cursor on match row
+[PASS] T9e pinned toast
+[PASS] T9f watchlist card appeared
+[PASS] T9g pinned star in tree
+[PASS] T10a cursor on kP
+[PASS] T10b inline edit prompt opens
+[PASS] T10c publish toast shown
+[PASS] T10d server received 0.05
+[PASS] T10e edit error shown
+[PASS] T10f esc closes editor
+[PASS] T10g string publish
+[PASS] T10h boolean publish
+[PASS] T10i array edit rejected
+[PASS] T12a watchlist count 5-12
+[PASS] T12b height-first single column at 5 cards
+[PASS] T12c cards stack vertically
+[PASS] T12d x removes active card
+[PASS] T12e unpinned toast
+[PASS] T12f palette opens
+[PASS] T12g clear watchlist command
+[PASS] T13a HUD shows DISCONNECTED or RECONNECTING
+[PASS] T13b disconnect toast
+server up
+[PASS] T13c reconnected ONLINE
+[PASS] T13d topics restored
+[PASS] T15a reconnect toast
+[PASS] T15b live again after palette reconnect
+[PASS] T16a picker opens
+[PASS] T16b saved targets listed
+[PASS] T16c typed retarget connects
+[PASS] T16d topics flow after retarget
+[PASS] T17a bad target shows DISCONNECTED
+[PASS] T17b returns to ONLINE
+[PASS] T17c values flow again
+[PASS] T18a last target saved in config
+[PASS] T20a wildcard cards
+[PASS] T21a preset loads watchlist
+[PASS] T21b dense preset count > 12
+[PASS] T21c multi-column when column full
+[PASS] T22a inline edit opens from card
+[PASS] T23a add-target prompt opens
+[PASS] T23b target added toast
+[PASS] T23c picker shows added target
+[PASS] T23d settings view overlay
+[PASS] T23f palette runs highlighted entry
+[PASS] T23e target removed toast
+[PASS] T24a preset saved toast
+[PASS] T24b preset persisted
+[PASS] T25a palette lists SSH restart
+[PASS] T25b dispatch toast
+[PASS] T25c ssh failure surfaced
+[PASS] T26a field card renders for botpose_wpiblue
+[PASS] T26b lookalike targetpose stays a value card
+[PASS] T26c palette toggles pose view on active card
+[PASS] T26d forced lookalike now renders as field card
+[PASS] T26e alliance red command confirms (user-driven only)
+[PASS] T26f cycle map command confirms
+[PASS] T26g cycle wraps to 2024 and back to 2025
+[PASS] T26h lone field card fills the watchlist canvas
+[PASS] T26i enlarged field view opens
+[PASS] T26j same key closes the field view
+[PASS] T26k empty estimate keeps the field card (sticky pose)
+[PASS] T14a quits on q
+[PASS] T14b clean exit code
+
+==== 93/93 checks passed ====

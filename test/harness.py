@@ -248,6 +248,7 @@ def main():
     print("harness client connected", flush=True)
 
     sd = harness.getTable("SmartDashboard")
+    sd_client = sd
     swerve = harness.getTable("Swerve")
 
     _opts = ntcore.PubSubOptions(periodic=0.05, topicsOnly=False)
@@ -285,7 +286,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version matches Cargo.toml", "RIONT v0.4.0" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.4.1" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
@@ -765,6 +766,19 @@ def main():
     tui.send("f"); tui.pump(0.4)
     check("T26j same key closes the field view",
           "FIELD VIEW" not in tui.text(), tui.text()[:400])
+
+    # T26k: empty estimates must NOT un-field the card (sticky pose).
+    # Simulate the camera losing its estimate with an empty array.
+    sd_client.putBoolean("EmitEmptyPose", True)
+    tui.pump(0.8)
+    snap = tui.lines()
+    card_title = any("botpose_wpiblue" in ln and "WATCHLIST" not in ln for ln in snap)
+    meta_rows = [j for j, sl in enumerate(snap) if "double[]  " in sl]
+    check("T26k empty estimate keeps the field card (sticky pose)",
+          card_title and meta_rows and meta_rows[-1] >= 15,
+          f"card_title={card_title} meta_rows={meta_rows}")
+    sd_client.putBoolean("EmitEmptyPose", False)
+    tui.pump(0.4)
 
     # cleanup: watchlist now holds only botpose; remove it.
     tui.send("x"); tui.pump(0.3)
