@@ -3,13 +3,13 @@
 RIONT (Robot Inspection Over Network Tables) is a keyboard-only NetworkTables
 (NT4) dashboard for FRC. Rust + ratatui.
 
-v0.4.0 presents a persistent two-zone layout: a **35% left control column**
+v0.5.0 presents a persistent two-zone layout: a **35% left control column**
 (collapsible Topic Tree + a passive bottom-left Inspector Dock) and a **65%
 full-height Watchlist Canvas** that auto-packs pinned topics into a
 responsive, type-aware card matrix — under a Driver-Station style HUD.
 
 ```
- RIONT v0.4.1     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+ RIONT v0.5.0     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
 ┌ TOPIC TREE (35% W, 70% H) ┐┌ WATCHLIST CANVAS (65% W, 100% H) ─────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │
@@ -103,6 +103,7 @@ replace the old ones instead of mixing with them. The watchlist survives
 | `Space` | pin topic to watchlist (dir = whole subtree) | unpin active card |
 | `x` | — | dismiss active card |
 | `f` | — | enlarged field view (toggle) on a hovered field card |
+| `o` | — | overlay: merge this field card with other overlaid field cards into one composite field |
 | `e` / Enter | edit value (bool/int/double/string) | edit active card |
 | `Tab` | -> watchlist | -> tree |
 | `/` | fuzzy search; `Space` pins a match, `Enter` jumps to it | |
@@ -253,6 +254,14 @@ and a muted grey pose trail.
   arrays between estimates (Limelight with no target). Once a topic has
   classified as a pose it stays a field card — empty estimates render the
   field without the robot marker instead of flickering the card away.
+- **Overlay groups:** several pose topics can share ONE field card
+  (e.g. odometry vs a vision estimate). Press `o` on each field card
+  to merge them: one composite card (`<name> +N`), one Tab stop, per-
+  topic marker colors with a legend (`● name`) in the card meta, and
+  per-member trails. The enlarged view (`f`) lists every member's
+  live x/y/theta. Membership persists in `config.json`
+  (`field.overlay_topics`); individual cards remain the default.
+  `x` on a composite unpins the whole group (`u` restores).
 - **Fill + enlarged view:** a lone field card expands to the entire
   watchlist canvas (it shrinks back to card size when other topics are
   pinned). Tab into the watchlist, hover a field card, press `f` — a

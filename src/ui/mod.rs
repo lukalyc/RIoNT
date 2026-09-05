@@ -40,6 +40,14 @@ const FIELD_BLUE: Color = Color::Rgb(0x45, 0x6C, 0x9E);
 const FIELD_RED: Color = Color::Rgb(0x9E, 0x56, 0x45);
 const ROBOT_BLUE: Color = Color::Rgb(0x5D, 0xA9, 0xFF);
 const ROBOT_RED: Color = Color::Rgb(0xFF, 0x5A, 0x4D);
+/// Per-member colors for OVERLAY composites (marker + trail pair). With
+/// multiple robots on one field, per-topic identity beats alliance color.
+const OVERLAY_MEMBERS: [(Color, Color); 4] = [
+    (Color::Rgb(0x5D, 0xA9, 0xFF), Color::Rgb(0x2C, 0x4E, 0x54)), // cyan
+    (Color::Rgb(0xFA, 0xBD, 0x2F), Color::Rgb(0x54, 0x45, 0x1E)), // amber
+    (Color::Rgb(0x7C, 0xC4, 0x7C), Color::Rgb(0x2E, 0x4E, 0x2E)), // green
+    (Color::Rgb(0xC0, 0x6C, 0xEA), Color::Rgb(0x4A, 0x2E, 0x54)), // magenta
+];
 const AMBER: Color = Color::Rgb(0xFA, 0xBD, 0x2F); // tree focus / strings
 const CYAN: Color = Color::Cyan; // numbers / watchlist focus / array brackets
 
@@ -707,8 +715,8 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     // watchlist then is the field); it shrinks back to card size as soon
     // as any other topic is pinned.
     if cells.len() == 1 && app.is_field_card(&cells[0]) {
-        let reading = app.field_reading(&cells[0]);
-        render_field_card(f, app, &cells[0], reading.as_ref(), area, focused, true);
+        let members = field_members_ui(app, &cells[0]);
+        render_field_card(f, app, &cells[0], &members, area, focused, true);
         return;
     }
 
@@ -810,8 +818,8 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
     let td = app.store.topics.get(topic);
     // Pose field cards: walls + robot marker + trail on a braille canvas.
     if app.is_field_card(topic) {
-        let reading = app.field_reading(topic);
-        render_field_card(f, app, topic, reading.as_ref(), rect, focused, sel);
+        let members = field_members_ui(app, topic);
+        render_field_card(f, app, topic, &members, rect, focused, sel);
         return;
     }
     let mut lines: Vec<Line> = match td.and_then(|t| t.current.as_ref()) {
@@ -840,11 +848,52 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
 /// blue-origin field frame; `fx` applies the USER-SET alliance mirror so
 /// a red-origin user sees the field from their own side. Stored values
 /// and the trail buffer are never transformed.
+/// A topic drawn on a field card: identity color, live reading.
+struct FieldMember {
+    topic: String,
+    reading: Option<crate::pose::PoseReading>,
+    color: Color,
+    trail: Color,
+}
+
+/// Resolve the member list for the field card at `head`: itself alone, or
+/// every overlay-group member (in watchlist order) when merged.
+fn field_members_ui(app: &App, head: &str) -> Vec<FieldMember> {
+    let topics = app.field_members(head);
+    let multi = topics.len() > 1;
+    topics
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let (color, trail) = if multi {
+                OVERLAY_MEMBERS[i % OVERLAY_MEMBERS.len()]
+            } else {
+                let c = match app.fms_red {
+                    Some(true) => ROBOT_RED,
+                    Some(false) => ROBOT_BLUE,
+                    None => CYAN,
+                };
+                (c, MUTED)
+            };
+            FieldMember {
+                topic: t.clone(),
+                reading: app.field_reading(t),
+                color,
+                trail,
+            }
+        })
+        .collect()
+}
+
+fn leaf_name(topic: &str) -> &str {
+    topic.rsplit('/').next().unwrap_or(topic)
+}
+
 fn render_field_card(
     f: &mut Frame,
     app: &App,
-    topic: &str,
-    reading: Option<&crate::pose::PoseReading>,
+    head: &str,
+    members: &[FieldMember],
     rect: Rect,
     focused: bool,
     sel: bool,
@@ -860,7 +909,11 @@ fn render_field_card(
     } else {
         Style::default().fg(MUTED)
     };
-    let title = short_name(topic, rect.width.saturating_sub(2) as usize);
+    let multi = members.len() > 1;
+    let mut title = short_name(head, rect.width.saturating_sub(2) as usize);
+    if multi {
+        title = format!("{} +{}", title, members.len() - 1);
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -868,7 +921,8 @@ fn render_field_card(
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Bottom row = same muted meta as value cards; canvas fills the rest.
+    // Bottom row: composite cards show a COLOR LEGEND (colored dot + leaf
+    // name per member); single cards keep the muted type/rate/delta meta.
     let (canvas_area, meta_area) = {
         let meta_h = 1u16.min(inner.height);
         let canvas_h = inner.height.saturating_sub(meta_h);
@@ -877,66 +931,49 @@ fn render_field_card(
             Rect { y: inner.y + canvas_h, height: meta_h, ..inner },
         )
     };
-    paint_field_canvas(f, canvas_area, app, topic, reading);
+    paint_field_canvas(f, canvas_area, app, members);
 
-    // Meta row: type, rate, delta - all muted (telemetry neutrality).
-    let td = app.store.topics.get(topic);
-    let ty = td.map(|t| t.data_type.as_str()).unwrap_or("?");
-    let hz = td
-        .and_then(|t| t.hz())
-        .map(|h| format!("{:.1} Hz", h))
-        .unwrap_or_else(|| "--".into());
-    let age = td
-        .and_then(|t| t.age_secs())
-        .map(fmt_delta)
-        .unwrap_or_else(|| "--".into());
-    let meta = Line::from(vec![
-        muted(ty),
-        muted("  "),
-        muted(hz),
-        muted(format!("  \u{394} {}", age)),
-    ]);
+    let meta = if multi {
+        let mut spans: Vec<Span> = vec![plain(" ")];
+        for (i, m) in members.iter().enumerate() {
+            if i > 0 {
+                spans.push(muted(" "));
+            }
+            spans.push(Span::styled("\u{25cf} ", Style::default().fg(m.color)));
+            spans.push(plain(leaf_name(&m.topic)));
+        }
+        Line::from(spans)
+    } else {
+        let topic = members
+            .first()
+            .map(|m| m.topic.clone())
+            .unwrap_or_else(|| head.to_string());
+        let td = app.store.topics.get(&topic);
+        let ty = td.map(|t| t.data_type.as_str()).unwrap_or("?");
+        let hz = td
+            .and_then(|t| t.hz())
+            .map(|h| format!("{:.1} Hz", h))
+            .unwrap_or_else(|| "--".into());
+        let age = td
+            .and_then(|t| t.age_secs())
+            .map(fmt_delta)
+            .unwrap_or_else(|| "--".into());
+        Line::from(vec![
+            muted(ty),
+            muted("  "),
+            muted(hz),
+            muted(format!("  \u{394} {}", age)),
+        ])
+    };
     f.render_widget(Paragraph::new(meta), meta_area);
 }
 
-/// The bare field drawing (marks, walls, trail, robot) into `area` -
-/// shared by the watchlist card and the enlarged field view.
-fn paint_field_canvas(
-    f: &mut Frame,
-    area: Rect,
-    app: &App,
-    topic: &str,
-    reading: Option<&crate::pose::PoseReading>,
-) {
+/// The bare field drawing (marks, walls, per-member trails and robots)
+/// into `area` - shared by the watchlist card and the enlarged view.
+fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMember]) {
     let length = app.field_map.length_m;
     let red = app.config.field.alliance == "red";
     let fx = |x: f64| if red { length - x } else { x };
-
-    let trail: Vec<(f64, f64)> = if app.show_pose_trail {
-        app.store
-            .pose_trail(topic)
-            .map(|t| t.iter().map(|(x, y, _)| (fx(*x), *y)).collect())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    // Between estimates (empty array etc.) the field renders WITHOUT the
-    // robot marker instead of the card disappearing entirely.
-    let robot = reading.map(|r| (fx(r.x), r.y));
-    // Alliance color: FMSInfo/IsRedAlliance when present, neutral cyan
-    // otherwise (bench testing - no FMS topic on the practice field).
-    let robot_color = match app.fms_red {
-        Some(true) => ROBOT_RED,
-        Some(false) => ROBOT_BLUE,
-        None => CYAN,
-    };
-    let (hdx, hdy) = reading
-        .map(|r| r.radians.sin_cos())
-        .unwrap_or((0.0, 1.0));
-    // Triangle marker: ~0.6 m tip, ~0.5 m base - legible at card scale.
-    let tip = robot.map(|(rx, ry)| (rx + 0.6 * hdx, ry + 0.6 * hdy));
-    let base_l = robot.map(|(rx, ry)| (rx - 0.25 * hdx - 0.3 * hdy, ry - 0.25 * hdy + 0.3 * hdx));
-    let base_r = robot.map(|(rx, ry)| (rx - 0.25 * hdx + 0.3 * hdy, ry - 0.25 * hdy - 0.3 * hdx));
 
     // Bounds must contain EVERY wall endpoint: Canvas drops a segment when
     // EITHER endpoint is outside the grid (walls can overshoot the nominal
@@ -955,7 +992,6 @@ fn paint_field_canvas(
         }
     }
     if ux0 > ux1 || uy0 > uy1 {
-        // Empty map: fall back to the field extents.
         ux0 = 0.0;
         uy0 = 0.0;
         ux1 = length;
@@ -974,7 +1010,6 @@ fn paint_field_canvas(
         ux1 - ux0,
         uy1 - uy0,
     );
-    // fit_bounds centers on its own extents; shift to the union's center.
     let sx = ucx - (bx0 + bx1) / 2.0;
     let sy = ucy - (by0 + by1) / 2.0;
     bx0 += sx;
@@ -1024,26 +1059,44 @@ fn paint_field_canvas(
                     });
                 }
             }
-            // Alliance halves are tinted by wall color (blue left, red
-            // right in the blue-origin frame); no text labels - the user-
-            // SET x mirror moves the colors, which is indication enough.
-            ctx.layer(); // robot layer paints over the walls
-            if !trail.is_empty() {
-                ctx.draw(&Points { coords: &trail, color: MUTED });
-            }
-            if let (Some(tip), Some(base_l), Some(base_r), Some(robot)) =
-                (tip, base_l, base_r, robot)
-            {
-                for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
-                    ctx.draw(&CanvasLine {
-                        x1: a.0,
-                        y1: a.1,
-                        x2: b.0,
-                        y2: b.1,
-                        color: robot_color,
-                    });
+            ctx.layer(); // robots paint over the walls
+            for m in members {
+                if !app.show_pose_trail {
+                    break;
                 }
-                ctx.draw(&Points { coords: &[robot], color: robot_color });
+                let trail: Vec<(f64, f64)> = app
+                    .store
+                    .pose_trail(&m.topic)
+                    .map(|t| t.iter().map(|(x, y, _)| (fx(*x), *y)).collect())
+                    .unwrap_or_default();
+                if !trail.is_empty() {
+                    ctx.draw(&Points { coords: &trail, color: m.trail });
+                }
+            }
+            for m in members {
+                if let Some(r) = &m.reading {
+                    let robot = (fx(r.x), r.y);
+                    let (hdx, hdy) = r.radians.sin_cos();
+                    let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
+                    let base_l = (
+                        robot.0 - 0.25 * hdx - 0.3 * hdy,
+                        robot.1 - 0.25 * hdy + 0.3 * hdx,
+                    );
+                    let base_r = (
+                        robot.0 - 0.25 * hdx + 0.3 * hdy,
+                        robot.1 - 0.25 * hdy - 0.3 * hdx,
+                    );
+                    for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
+                        ctx.draw(&CanvasLine {
+                            x1: a.0,
+                            y1: a.1,
+                            x2: b.0,
+                            y2: b.1,
+                            color: m.color,
+                        });
+                    }
+                    ctx.draw(&Points { coords: &[robot], color: m.color });
+                }
             }
         });
     f.render_widget(canvas, area);
@@ -1052,59 +1105,73 @@ fn paint_field_canvas(
 /// Enlarged field view: a near-fullscreen popup with just the field and
 /// the live pose readout. Opened with `f` from a hovered field card;
 /// the same key (or Esc) closes it.
+/// Enlarged field view: a near-fullscreen popup with the field and a
+/// per-member legend (live x/y/theta). Opened with `f` from a hovered
+/// field card; the same key (or Esc) closes it.
 fn draw_field_view(f: &mut Frame, app: &App) {
-    let Some(topic) = app.field_view.clone() else {
+    let Some(head) = app.field_view.clone() else {
         return;
     };
-    if !app.is_field_card(&topic) {
+    if !app.is_field_card(&head) {
         return;
     }
-    let reading = app.field_reading(&topic);
+    let members = field_members_ui(app, &head);
     let area = centered_rect(f.area(), 96, 94);
     f.render_widget(Clear, area);
+    let title = if members.len() > 1 {
+        format!(" FIELD VIEW - overlay ({} topics) ", members.len())
+    } else {
+        format!(" FIELD VIEW - {} ", head)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
         .title(Span::styled(
-            format!(" FIELD VIEW - {} ", topic),
+            title,
             Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Bottom row: live pose readout (mirrored like the drawing when the
-    // user-set alliance flip is active) + close hint.
-    let (canvas_area, value_area) = {
-        let value_h = 1u16.min(inner.height);
-        let canvas_h = inner.height.saturating_sub(value_h);
-        (
-            Rect { height: canvas_h, ..inner },
-            Rect { y: inner.y + canvas_h, height: value_h, ..inner },
-        )
+    // Bottom rows: one legend/readout line per member + a close hint.
+    let legend_h = (members.len() as u16 + 1).clamp(2, 6).min(inner.height);
+    let canvas_h = inner.height.saturating_sub(legend_h);
+    let canvas_area = Rect { height: canvas_h, ..inner };
+    let value_area = Rect {
+        y: inner.y + canvas_h,
+        height: legend_h,
+        ..inner
     };
-    paint_field_canvas(f, canvas_area, app, &topic, reading.as_ref());
+    paint_field_canvas(f, canvas_area, app, &members);
 
-    let value = match reading {
-        Some(r) => {
-            let length = app.field_map.length_m;
-            let dx = if app.config.field.alliance == "red" {
-                length - r.x
-            } else {
-                r.x
-            };
-            Line::from(vec![
-                bold(format!("  x: {:.2} m", dx)),
-                bold(format!("   y: {:.2} m", r.y)),
-                bold(format!("   theta: {:.1}\u{b0}", r.radians.to_degrees())),
-                dim("                                    f/Esc close"),
-            ])
+    let length = app.field_map.length_m;
+    let mut lines: Vec<Line> = Vec::new();
+    for m in &members {
+        let dot = Span::styled("\u{25cf} ", Style::default().fg(m.color));
+        match &m.reading {
+            Some(r) => {
+                let dx = if app.config.field.alliance == "red" {
+                    length - r.x
+                } else {
+                    r.x
+                };
+                lines.push(Line::from(vec![
+                    dot,
+                    plain(format!("{}  ", m.topic)),
+                    bold(format!("x: {:.2} m  y: {:.2} m  theta: {:.1}", dx, r.y, r.radians.to_degrees())),
+                ]));
+            }
+            None => {
+                lines.push(Line::from(vec![
+                    dot,
+                    plain(format!("{}  ", m.topic)),
+                    dim("no pose estimate"),
+                ]));
+            }
         }
-        None => Line::from(vec![
-            dim("  no pose estimate"),
-            dim("                                    f/Esc close"),
-        ]),
-    };
-    f.render_widget(Paragraph::new(value), value_area);
+    }
+    lines.push(Line::from(dim("                                                                 f/Esc close")));
+    f.render_widget(Paragraph::new(lines), value_area);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -1119,7 +1186,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             "tab tree  1-9 presets  / find  : commands  c connect  q quit"
         }
         Focus::Watchlist => {
-            "h/j/k/l move  x remove  e edit  spc unpin  f field  tab tree  g/G ends  1-9 presets  : commands  q quit"
+            "h/j/k/l move  x remove  e edit  spc unpin  f field  o overlay  tab tree  g/G ends  1-9 presets  : commands  q quit"
         }
     };
     f.render_widget(Paragraph::new(Line::from(vec![dim(hints)])), area);

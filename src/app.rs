@@ -507,6 +507,32 @@ impl App {
     /// re-expanded on every call, so topics the robot publishes later are
     /// adopted automatically.
     pub fn watchlist_cells(&self) -> Vec<String> {
+        let raw = self.watchlist_cells_raw();
+        // Overlay groups collapse into ONE cell (the first member), so
+        // navigation and rendering treat the composite as a single card.
+        let mut overlay_seen = false;
+        raw.into_iter()
+            .filter(|c| {
+                if self.is_field_card(c)
+                    && self
+                        .config
+                        .field
+                        .overlay_topics
+                        .iter()
+                        .any(|t| t == c)
+                {
+                    if overlay_seen {
+                        return false; // later members hide inside the composite
+                    }
+                    overlay_seen = true;
+                }
+                true
+            })
+            .collect()
+    }
+
+    /// Pinned topics in display order WITHOUT overlay collapsing.
+    fn watchlist_cells_raw(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for src in &self.watchlist {
@@ -527,6 +553,36 @@ impl App {
             }
         }
         out
+    }
+
+    /// The topics drawn together on the field card that `topic` belongs
+    /// to: just itself, unless it is a member of an overlay group with
+    /// more field-card members.
+    pub fn field_members(&self, topic: &str) -> Vec<String> {
+        if !self.is_field_card(topic) {
+            return Vec::new();
+        }
+        let member = self
+            .config
+            .field
+            .overlay_topics
+            .iter()
+            .any(|t| t == topic);
+        if !member {
+            return vec![topic.to_string()];
+        }
+        self.watchlist_cells_raw()
+            .into_iter()
+            .filter(|c| {
+                self.is_field_card(c)
+                    && self
+                        .config
+                        .field
+                        .overlay_topics
+                        .iter()
+                        .any(|t| t == c)
+            })
+            .collect()
     }
 
     /// Card-column packing rule shared with the renderer: 1 column for
@@ -783,9 +839,26 @@ impl App {
             KeyCode::Char('g') => c = 0,
             KeyCode::Char('G') => c = n.saturating_sub(1),
             KeyCode::Char('x') | KeyCode::Char(' ') => {
-                // Dismiss the active card (direct removal per spec).
+                // Dismiss the active card. On an overlay COMPOSITE that
+                // means every member — destructive, so stash the previous
+                // watchlist into the `u` undo slot and say so honestly.
                 if let Some(topic) = cells.get(c).cloned() {
-                    self.unpin_topic(&topic);
+                    let members = self.field_members(&topic);
+                    if members.len() > 1 {
+                        self.last_watchlist = Some(self.watchlist.clone());
+                        for m in &members {
+                            self.unpin_topic(m);
+                        }
+                        self.toast(
+                            ToastKind::Warn,
+                            format!(
+                                "removed overlay: {} topics — u restores",
+                                members.len()
+                            ),
+                        );
+                    } else {
+                        self.unpin_topic(&topic);
+                    }
                 }
                 self.clamp_watchlist_cursor();
                 return UiAction::None;
@@ -798,6 +871,33 @@ impl App {
                         self.toast(ToastKind::Error, "topic type not editable");
                     }
                 }
+            }
+            KeyCode::Char('o') => {
+                // Overlay membership: merges field cards into ONE composite
+                // field. Individual cards stay the default — o is opt-in
+                // per topic, reversible with o, persisted in config.
+                if let Some(topic) = cells.get(c).cloned() {
+                    if !self.is_field_card(&topic) {
+                        self.toast(ToastKind::Info, "not a field topic");
+                    } else {
+                        let overlaid = &mut self.config.field.overlay_topics;
+                        let msg = match overlaid.iter().position(|t| t == &topic) {
+                            Some(pos) => {
+                                overlaid.remove(pos);
+                                "removed from overlay".to_string()
+                            }
+                            None => {
+                                overlaid.push(topic.clone());
+                                "added to overlay".to_string()
+                            }
+                        };
+                        if let Err(e) = self.config.save() {
+                            self.toast(ToastKind::Error, format!("save config: {}", e));
+                        }
+                        self.toast(ToastKind::Success, msg);
+                    }
+                }
+                return UiAction::None;
             }
             KeyCode::Char('f') => {
                 // Enlarged field view: only meaningful over a field card.
@@ -1649,5 +1749,53 @@ pub fn resolve_target(input: &str) -> String {
         input.to_string()
     } else {
         format!("{}:{}", input, port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nt::store::NtValue;
+
+    #[test]
+    fn overlay_group_collapses_cells_and_expands_members() {
+        let mut app = App::new("127.0.0.1:5810".into());
+        // Isolate from the developer's real ~/.config/riont/config.json.
+        app.config = crate::config::Config::with_defaults();
+        // Two pose topics: botpose (auto-classified) + targetpose (forced).
+        app.apply_values(
+            vec![
+                (
+                    "SmartDashboard/botpose_wpiblue".into(),
+                    NtValue::DoubleArray(vec![1.0, 2.0, 0.0, 0.0, 0.0, 90.0]),
+                    1_000,
+                ),
+                (
+                    "SmartDashboard/targetpose".into(),
+                    NtValue::DoubleArray(vec![3.0, 4.0, 0.0, 0.0, 0.0, 45.0]),
+                    2_000,
+                ),
+            ],
+            std::time::Instant::now(),
+        );
+        app.config
+            .field
+            .force_pose_topics
+            .push("SmartDashboard/targetpose".into());
+        app.watchlist = vec![
+            MatrixSource::Topic("SmartDashboard/botpose_wpiblue".into()),
+            MatrixSource::Topic("SmartDashboard/targetpose".into()),
+        ];
+        // Not overlaid yet: two cells, two single-member cards.
+        assert_eq!(app.watchlist_cells().len(), 2);
+        // Overlay both.
+        app.config.field.overlay_topics = vec![
+            "SmartDashboard/botpose_wpiblue".into(),
+            "SmartDashboard/targetpose".into(),
+        ];
+        let cells = app.watchlist_cells();
+        assert_eq!(cells.len(), 1, "cells: {:?}", cells);
+        let members = app.field_members("SmartDashboard/botpose_wpiblue");
+        assert_eq!(members.len(), 2, "members: {:?}", members);
     }
 }

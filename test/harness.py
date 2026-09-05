@@ -286,7 +286,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version matches Cargo.toml", "RIONT v0.4.1" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.5.0" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
@@ -690,7 +690,8 @@ def main():
     # TAB then guarantees Watchlist. Cards: [Battery, botpose, targetpose];
     # cursor 0, so j twice lands on targetpose.
     tui.send("\x1b"); tui.pump(0.2)  # force Tree focus
-    tui.send("\t"); tui.pump(0.2)   # -> Watchlist, cursor 0
+    tui.send("\t"); tui.pump(0.2)
+    tui.send("j"); tui.pump(0.2)
     tui.send("j"); tui.pump(0.2)
     tui.send("j"); tui.pump(0.2)    # down to the targetpose card
     tui.send(":"); tui.pump(0.2)
@@ -779,6 +780,49 @@ def main():
           f"card_title={card_title} meta_rows={meta_rows}")
     sd_client.putBoolean("EmitEmptyPose", False)
     tui.pump(0.4)
+    # T26l-o: overlay groups - two field topics merge into ONE composite
+    # card (o toggles membership; WATCHLIST count drops to 1).
+
+    tui.send("/"); tui.pump(0.2)
+    tui.send("targetpose"); tui.pump(0.3)
+    tui.send(" "); tui.pump(0.2)
+    tui.send("\x1b"); tui.pump(0.5)
+    tui.send("\x1b"); tui.pump(0.3)  # watch -> Tree (pin ESC only exits search)
+    # Focus is state-dependent here: ESC forces Tree, TAB then lands
+    # Watchlist with cursor 0 (= botpose); j steps to targetpose.
+    tui.send("\t"); tui.pump(0.2)
+    tui.send("j"); tui.pump(0.2)
+    tui.send("j"); tui.pump(0.2)
+    tui.send(":"); tui.pump(0.2)
+    tui.send("toggle"); tui.pump(0.2)
+    tui.send("pose"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send("o"); tui.pump(0.3)
+    tui.send("k"); tui.pump(0.2)
+    tui.send("o"); tui.pump(0.4)
+    txt = tui.text()
+    check("T26l overlay merges two field cards into one",
+          "+1" in txt, txt[:500])  
+    open('t26l_dump.txt', 'w', encoding='utf-8').write(txt)  
+    open('t26l_dump.txt', 'w', encoding='utf-8').write(txt)  # composite title: head +1
+    check("T26m composite card shows a per-topic legend",
+          "botpose_wpiblue" in txt and "targetpose" in txt, txt[:600])
+    tui.send("f"); tui.pump(0.5)
+    txt = tui.text()
+    check("T26n enlarged view shows the overlay group",
+          "overlay (2 topics)" in txt and "x:" in txt, txt[:500])
+    tui.send("f"); tui.pump(0.4)
+    tui.send("o"); tui.pump(0.4)
+    check("T26o o toggles membership (unmerge)",
+          "WATCHLIST (2)" in tui.text(), tui.text()[:500])
+    # cleanup: remove botpose, un-force + remove targetpose
+    tui.send("x"); tui.pump(0.3)
+    tui.send("o"); tui.pump(0.3)
+    tui.send(":"); tui.pump(0.2)
+    tui.send("toggle"); tui.pump(0.2)
+    tui.send("pose"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send("x"); tui.pump(0.3)
 
     # cleanup: watchlist now holds only botpose; remove it.
     tui.send("x"); tui.pump(0.3)

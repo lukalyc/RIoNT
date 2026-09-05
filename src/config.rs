@@ -52,6 +52,11 @@ pub struct FieldSettings {
     /// them). Managed by later user commands; persisted here only.
     #[serde(default)]
     pub force_pose_topics: Vec<String>,
+    /// Field-card topics joined into ONE composite field card (overlay
+    /// groups). Toggled per topic with `o` on a hovered field card;
+    /// individual cards remain the default.
+    #[serde(default)]
+    pub overlay_topics: Vec<String>,
 }
 
 fn default_map() -> String {
@@ -69,6 +74,7 @@ impl Default for FieldSettings {
             map: default_map(),
             walls_file: None,
             force_pose_topics: Vec::new(),
+            overlay_topics: Vec::new(),
         }
     }
 }
