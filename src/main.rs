@@ -214,6 +214,9 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                                     // next launch.
                                     let (cfg, err) = config::Config::load();
                                     app.config = cfg;
+                                    // A new walls_file/map may have been set
+                                    // in the editor — re-resolve geometry.
+                                    app.reload_field_map();
                                     match err {
                                         None => {
                                             app.toast(app::ToastKind::Success, "config reloaded");

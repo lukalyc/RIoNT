@@ -83,12 +83,13 @@ pub enum Command {
     FieldAllianceRed,
     FieldTogglePoseView,
     FieldToggleTrail,
+    FieldCycleMap,
     ReconnectNt,
     RestartRobotCode,
     CopyTopicPath,
 }
 
-pub const COMMANDS: [(Command, &str); 15] = [
+pub const COMMANDS: [(Command, &str); 16] = [
     (Command::SettingsOpen, "Settings: Open Configuration"),
     (Command::SettingsView, "Settings: View Settings"),
     (Command::SettingsAddTarget, "Settings: Add Robot Target"),
@@ -104,6 +105,7 @@ pub const COMMANDS: [(Command, &str); 15] = [
         "Field: Toggle Pose View on Active Card",
     ),
     (Command::FieldToggleTrail, "Field: Toggle Trail"),
+    (Command::FieldCycleMap, "Field: Cycle Map"),
     (Command::ReconnectNt, "NetworkTables: Reconnect Socket"),
     (Command::RestartRobotCode, "System: Restart Robot Code"),
     (Command::CopyTopicPath, "Copy Active Topic Path"),
@@ -189,6 +191,11 @@ pub struct App {
     /// Pose-trail dots on field cards (palette `Field: Toggle Trail`).
     pub show_pose_trail: bool,
 
+    /// Active field map (built-in or external JSON). Resolved from config
+    /// at startup, on `Field: Cycle Map`, and after a config-editor reload;
+    /// cached so the 120 Hz render loop never touches the filesystem.
+    pub field_map: crate::field::FieldMap,
+
     // reconnect attempts since the last successful connection
     pub retry_attempt: u32,
 }
@@ -232,6 +239,8 @@ impl App {
             palette_cursor: 0,
             toasts: Vec::new(),
             show_pose_trail: true,
+            field_map: crate::field::FieldMap::builtin("2025-reefscape")
+                .expect("default map is built in"),
             retry_attempt: 0,
         };
         if let Some(e) = config_err {
@@ -239,6 +248,13 @@ impl App {
                 ToastKind::Warn,
                 format!("config invalid, using defaults ({})", e),
             );
+        }
+        // Resolve the field map from the (possibly just-loaded) config; a
+        // broken walls_file falls back to the built-in map with a warning.
+        let (map, field_warn) = crate::field::resolve(&app.config);
+        app.field_map = map;
+        if let Some(w) = field_warn {
+            app.toast(ToastKind::Warn, format!("{} — using built-in map", w));
         }
         // Restore the persisted watchlist (same `prefix/*` glob format the
         // presets use) so a restart never loses the operator's view. Globs
@@ -772,6 +788,17 @@ impl App {
         self.edit_error = None;
     }
 
+    /// Re-resolve the cached field map from config (palette cycle, config
+    /// editor reload). Warns when an external walls_file fails and the
+    /// built-in fallback is used instead.
+    pub fn reload_field_map(&mut self) {
+        let (map, warn) = crate::field::resolve(&self.config);
+        self.field_map = map;
+        if let Some(w) = warn {
+            self.toast(ToastKind::Warn, format!("{} — using built-in map", w));
+        }
+    }
+
     /// Active presets: config.json first, legacy .nt-views.json fallback.
     fn preset_list(&self) -> Vec<(String, Vec<String>)> {
         let cfg = self.config.preset_list();
@@ -1006,6 +1033,32 @@ impl App {
                     format!(
                         "pose trail {}",
                         if self.show_pose_trail { "on" } else { "off" }
+                    ),
+                );
+                UiAction::None
+            }
+            Command::FieldCycleMap => {
+                // Cycle the built-in maps (2024 -> 2025 -> 2026 -> ...).
+                // Cycling selects built-ins, so an external walls_file is
+                // cleared — the file overrides built-ins while it is set.
+                let pos = crate::field::BUILTIN_MAPS
+                    .iter()
+                    .position(|n| *n == self.field_map.name)
+                    .map(|p| (p + 1) % crate::field::BUILTIN_MAPS.len())
+                    .unwrap_or(0);
+                let next = crate::field::BUILTIN_MAPS[pos];
+                self.config.field.map = next.to_string();
+                self.config.field.walls_file = None;
+                if let Err(e) = self.config.save() {
+                    self.toast(ToastKind::Error, format!("save config: {}", e));
+                }
+                self.reload_field_map();
+                let m = &self.field_map;
+                self.toast(
+                    ToastKind::Success,
+                    format!(
+                        "field map: {} ({:.2} x {:.2} m)",
+                        m.name, m.length_m, m.width_m
                     ),
                 );
                 UiAction::None

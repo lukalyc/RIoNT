@@ -1,12 +1,18 @@
-//! 2025 REEFSCAPE field geometry for the pose field card.
+//! Field geometry for the pose field card.
 //!
-//! Wall polylines are meters, blue-alliance origin (blue driver-station
-//! wall at x = 0, +x into the field, +y to the left), matching Limelight
-//! `botpose_wpiblue` and WPILib odometry frames. The perimeter is exact;
-//! interior obstacles are APPROXIMATIONS pending verification against
-//! PathPlanner's official field JSON — a season swap should be a
-//! data-only change to the constants below (PathPlanner JSON layout:
-//! `{ game, fieldLength, fieldWidth, walls: [[[x,y],...] ...] }`).
+//! Coordinates are meters, blue-alliance origin (blue driver-station wall
+//! at x = 0, +x into the field, +y to the left), matching Limelight
+//! `botpose_wpiblue` and WPILib odometry frames.
+//!
+//! Maps come from three sources, in priority order:
+//!   1. `config.field.walls_file` — external JSON (PathPlanner format),
+//!      THE path for new seasons: drop in the official file, no rebuild.
+//!   2. `config.field.map` — a built-in map name (see BUILTIN_MAPS).
+//!   3. The default built-in (`2025-reefscape`).
+//!
+//! BUILT-IN interior obstacles are APPROXIMATIONS (see each const). The
+//! perimeter is exact. Official geometry arrives via `scripts/fetch_field.py`
+//! + `walls_file`; a season swap should never require editing this file.
 //!
 //! Alliance flip is RENDERING-ONLY and USER-DRIVEN: the app never infers
 //! an alliance. When the user sets `config.field.alliance = "red"` via
@@ -14,13 +20,47 @@
 //! values are untouched.
 
 use crate::nt::store::NtValue;
+use serde::Deserialize;
 
-/// Wall + obstacle polylines (meters, blue origin). Perimeter is exact;
-/// interior shapes are approximations (see module docs).
-pub const WALLS: &[&[(f64, f64)]] = &[
+/// A field map: extents + wall polylines (meters, blue origin).
+#[derive(Debug, Clone)]
+pub struct FieldMap {
+    pub name: String,
+    pub length_m: f64,
+    pub width_m: f64,
+    pub walls: Vec<Vec<(f64, f64)>>,
+}
+
+/// Built-in maps, in cycle order (palette `Field: Cycle Map`).
+pub const BUILTIN_MAPS: [&str; 3] = ["2024-crescendo", "2025-reefscape", "2026-tba"];
+
+/// 2024 CRESCENDO: 16.54 x 8.21 m. Perimeter exact; subwoofer/amp/stage
+/// are approximations pending official PathPlanner geometry.
+const CRESCENDO_WALLS: &[&[(f64, f64)]] = &[
     // Perimeter (exact).
     &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
-    // Reef: hexagonal scoring structure at field center (approximation).
+    // Subwoofer: protrusion on the blue driver-station wall (approx).
+    &[(0.0, 2.9), (1.2, 2.9), (1.2, 5.3), (0.0, 5.3)],
+    // Amp: corner structure, blue-left (approx).
+    &[(0.0, 6.6), (1.2, 6.6), (1.2, 8.21), (0.0, 8.21)],
+    // Stage: center scoring structure (approx hexagon).
+    &[
+        (6.1 + 1.0, 4.105),
+        (6.1 + 0.5, 4.105 + 0.87),
+        (6.1 - 0.5, 4.105 + 0.87),
+        (6.1 - 1.0, 4.105),
+        (6.1 - 0.5, 4.105 - 0.87),
+        (6.1 + 0.5, 4.105 - 0.87),
+        (6.1 + 1.0, 4.105),
+    ],
+];
+
+/// 2025 REEFSCAPE: 16.54 x 8.21 m. Perimeter exact; reef/processor/cage
+/// posts are approximations pending official PathPlanner geometry.
+const REEFSCAPE_WALLS: &[&[(f64, f64)]] = &[
+    // Perimeter (exact).
+    &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
+    // Reef: hexagonal scoring structure at field center (approx).
     &[
         (8.27 + 1.10, 4.105),
         (8.27 + 0.55, 4.105 + 0.953),
@@ -30,12 +70,115 @@ pub const WALLS: &[&[(f64, f64)]] = &[
         (8.27 + 0.55, 4.105 - 0.953),
         (8.27 + 1.10, 4.105),
     ],
-    // Processor: wall station on the blue half (approximation).
+    // Processor: wall station on the blue half (approx).
     &[(3.0, 0.0), (3.0, 0.8), (4.2, 0.8), (4.2, 0.0)],
-    // Cage posts near each driver-station wall (approximation).
+    // Cage posts near each driver-station wall (approx).
     &[(1.2, 3.4), (1.2, 4.8)],
     &[(15.34, 3.4), (15.34, 4.8)],
 ];
+
+/// 2026 season: game not yet in this build. Perimeter only — the official
+/// map arrives via `scripts/fetch_field.py` + `config.field.walls_file`.
+const TBA_2026_WALLS: &[&[(f64, f64)]] = &[
+    &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
+];
+
+/// PathPlanner-style field JSON:
+/// `{ "game": "...", "fieldLength": m, "fieldWidth": m,
+///    "walls": [ [[x,y],[x,y],...], ... ] }` — meters, blue origin.
+/// Snake-case aliases accepted for hand-written files.
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)] // PathPlanner field JSON uses camelCase keys
+struct FieldJson {
+    #[serde(default, alias = "game_name")]
+    game: Option<String>,
+    #[serde(alias = "field_length")]
+    fieldLength: f64,
+    #[serde(alias = "field_width")]
+    fieldWidth: f64,
+    #[serde(default)]
+    walls: Vec<Vec<[f64; 2]>>,
+}
+
+impl FieldMap {
+    pub fn builtin(name: &str) -> Option<FieldMap> {
+        let (length_m, width_m, walls) = match name {
+            "2024-crescendo" => (16.54, 8.21, CRESCENDO_WALLS),
+            "2025-reefscape" => (16.54, 8.21, REEFSCAPE_WALLS),
+            "2026-tba" => (16.54, 8.21, TBA_2026_WALLS),
+            _ => return None,
+        };
+        Some(FieldMap {
+            name: name.to_string(),
+            length_m,
+            width_m,
+            walls: walls.iter().map(|p| p.to_vec()).collect(),
+        })
+    }
+
+    /// Parse a field JSON (PathPlanner format). Rejects garbage rather
+    /// than guessing: extents must be positive, walls must be non-empty
+    /// polylines with finite coordinates.
+    pub fn from_json(text: &str, name: &str) -> Result<FieldMap, String> {
+        let f: FieldJson = serde_json::from_str(text).map_err(|e| format!("field json: {}", e))?;
+        if !(f.fieldLength.is_finite() && f.fieldLength > 1.0)
+            || !(f.fieldWidth.is_finite() && f.fieldWidth > 1.0)
+        {
+            return Err("field json: implausible extents".into());
+        }
+        if f.walls.is_empty() {
+            return Err("field json: no walls".into());
+        }
+        let walls: Vec<Vec<(f64, f64)>> = f
+            .walls
+            .into_iter()
+            .map(|poly| poly.into_iter().map(|p| (p[0], p[1])).collect())
+            .collect();
+        if walls.iter().any(|p| {
+            p.is_empty()
+                || p.iter()
+                    .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        }) {
+            return Err("field json: non-finite wall coordinates".into());
+        }
+        Ok(FieldMap {
+            name: f.game.unwrap_or_else(|| name.to_string()),
+            length_m: f.fieldLength,
+            width_m: f.fieldWidth,
+            walls,
+        })
+    }
+}
+
+/// Resolve the active field map from config. Returns the map plus an
+/// optional warning (walls_file failed to read/parse) for the caller to
+/// toast — the built-in fallback always succeeds.
+pub fn resolve(config: &crate::config::Config) -> (FieldMap, Option<String>) {
+    if let Some(path) = &config.field.walls_file {
+        if !path.is_empty() {
+            return match std::fs::read_to_string(path) {
+                Ok(text) => match FieldMap::from_json(&text, path) {
+                    Ok(m) => (m, None),
+                    Err(e) => (builtin_map(config), Some(e)),
+                },
+                Err(e) => (
+                    builtin_map(config),
+                    Some(format!("walls_file {}: {}", path, e)),
+                ),
+            };
+        }
+    }
+    (builtin_map(config), None)
+}
+
+/// The built-in map selected by `config.field.map` (default REEFSCAPE
+/// when the name is unknown). Does NOT consider walls_file — that is
+/// resolve()'s job.
+fn builtin_map(config: &crate::config::Config) -> FieldMap {
+    FieldMap::builtin(&config.field.map)
+        .or_else(|| FieldMap::builtin(&crate::config::FieldSettings::default().map))
+        .expect("default map name is built in")
+}
 
 /// Force-pose reading for topics the user explicitly opted in via
 /// `Field: Toggle Pose View on Active Card`. Interpretation is
@@ -120,5 +263,51 @@ mod tests {
             let want = cols as f64 / (2.0 * rows as f64);
             assert!((span_ratio - want).abs() < 1e-9, "{cols}x{rows}");
         }
+    }
+
+    #[test]
+    fn builtins_resolve() {
+        for name in BUILTIN_MAPS {
+            let m = FieldMap::builtin(name).unwrap_or_else(|| panic!("{}", name));
+            assert_eq!(m.name, name);
+            assert!(!m.walls.is_empty());
+            assert!(m.length_m > 1.0 && m.width_m > 1.0);
+        }
+        assert!(FieldMap::builtin("1992-maize-maze").is_none());
+    }
+
+    #[test]
+    fn parses_pathplanner_style_json() {
+        let text = r#"{
+            "game": "NextSeason",
+            "fieldLength": 16.54,
+            "fieldWidth": 8.21,
+            "walls": [[[0,0],[16.54,0],[16.54,8.21],[0,8.21],[0,0]]]
+        }"#;
+        let m = FieldMap::from_json(text, "file.json").unwrap();
+        assert_eq!(m.name, "NextSeason");
+        assert_eq!((m.length_m, m.width_m), (16.54, 8.21));
+        assert_eq!(m.walls[0].len(), 5);
+    }
+
+    #[test]
+    fn json_rejects_garbage() {
+        assert!(FieldMap::from_json("not json", "f").is_err());
+        assert!(FieldMap::from_json(r#"{"fieldLength": 0.0, "fieldWidth": 8.21, "walls": [[[0,0],[1,1]]]}"#, "f").is_err());
+        assert!(FieldMap::from_json(r#"{"fieldLength": 16.54, "fieldWidth": 8.21}"#, "f").is_err());
+        assert!(FieldMap::from_json(
+            r#"{"fieldLength": 16.54, "fieldWidth": 8.21, "walls": [[[0,0],[NaN,1]]]}"#,
+            "f"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resolve_falls_back_to_builtin_on_bad_file() {
+        let mut cfg = crate::config::Config::with_defaults();
+        cfg.field.walls_file = Some("definitely/missing.json".into());
+        let (m, warn) = resolve(&cfg);
+        assert!(warn.is_some());
+        assert!(!m.walls.is_empty());
     }
 }

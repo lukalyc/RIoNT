@@ -37,11 +37,25 @@ pub struct FieldSettings {
     pub length_m: f64,
     pub width_m: f64,
     pub alliance: String,
+    /// Built-in field map name (see field::BUILTIN_MAPS). Cycled by the
+    /// palette `Field: Cycle Map` command.
+    #[serde(default = "default_map")]
+    pub map: String,
+    /// External field JSON (PathPlanner format: fieldLength/fieldWidth/
+    /// walls, meters, blue origin). When set and parseable it OVERRIDES
+    /// the built-in map — THE path for new seasons (scripts/fetch_field.py
+    /// writes this). Relative paths resolve against the launch directory.
+    #[serde(default)]
+    pub walls_file: Option<String>,
     /// Topics the user explicitly marked as robot pose (rendered as a
     /// field card even though the conservative auto-classifier passes on
     /// them). Managed by later user commands; persisted here only.
     #[serde(default)]
     pub force_pose_topics: Vec<String>,
+}
+
+fn default_map() -> String {
+    "2025-reefscape".into()
 }
 
 impl Default for FieldSettings {
@@ -52,6 +66,8 @@ impl Default for FieldSettings {
             length_m: 16.54,
             width_m: 8.21,
             alliance: "blue".into(),
+            map: default_map(),
+            walls_file: None,
             force_pose_topics: Vec::new(),
         }
     }

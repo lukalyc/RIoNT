@@ -715,6 +715,24 @@ def main():
     tui.send("alliance"); tui.pump(0.2)
     tui.send("blue"); tui.pump(0.3)
     tui.send("\r"); tui.pump(0.4)
+    # T26f/g: map cycling (palette) — 2025 -> 2026 -> 2024 -> 2025 restore.
+    tui.send(":"); tui.pump(0.2)
+    tui.send("cycle"); tui.pump(0.2)
+    tui.send("map"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.5)
+    check("T26f cycle map command confirms",
+          "field map: 2026-tba" in tui.text(), tui.text()[-600:])
+    tui.send(":"); tui.pump(0.2)
+    tui.send("cycle"); tui.pump(0.2)
+    tui.send("map"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.5)
+    check("T26g cycle wraps to 2024 and back to 2025",
+          "field map: 2024-crescendo" in tui.text(), tui.text()[-600:])
+    tui.send(":"); tui.pump(0.2)
+    tui.send("cycle"); tui.pump(0.2)
+    tui.send("map"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)  # back to 2025-reefscape (config restored)
+
     # dismiss the two pose cards; cursor sits on targetpose. x removes it
     # (cursor clamps to botpose), a second x removes botpose. Battery stays.
     tui.send("x"); tui.pump(0.2)

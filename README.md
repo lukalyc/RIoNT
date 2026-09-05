@@ -250,9 +250,18 @@ and a muted grey pose trail.
   transformed. It persists in `config.json` (`"field": {"alliance": ...}`).
 - **Trail:** on by default, toggle with `Field: Toggle Trail`; capped at
   300 points / 10 s of server time.
-- **Field size:** `config.json` → `"field": {"length_m": 16.54,
-  "width_m": 8.21}` (2025 REEFSCAPE defaults). Wall polylines live in
-  `src/field.rs` — a season swap is a data-only change.
+- **Field size / season map:** the map comes from `config.json` →
+  `"field": {"map": ...}` (built-ins: `2024-crescendo`, `2025-reefscape`,
+  `2026-tba`) or — for new seasons without a rebuild — an external
+  PathPlanner-format JSON via `"field": {"walls_file": "fields/<name>.json"}`
+  (keys: `game`, `fieldLength`, `fieldWidth`, `walls` — meters, blue origin).
+  The palette's `Field: Cycle Map` switches built-ins in-app. Generate the
+  external file with `python scripts/fetch_field.py 2026` (downloads from
+  PathPlanner) or `--from-file <downloaded.json>`; when the official 2026
+  map is published this is a config-only swap, no rebuild. A missing/broken
+  `walls_file` falls back to the built-in map with a warning toast.
+  Built-in interior obstacles are documented approximations — official
+  geometry always comes from the field JSON.
 - Struct topics that are not `struct:Pose2d` keep rendering as `<N bytes>`;
   `struct:Pose2d` renders `(x m, y m, heading°)` in tree, inspector and
   cards.
@@ -266,7 +275,8 @@ src/config.rs        ~/.config/riont/config.json: targets, presets, SSH settings
 src/nt/client.rs     Async NT4 task + background SSH restart. Owns the socket, never blocks the UI.
 src/nt/store.rs      Topic store: values, metadata, Hz windowing, pose trails.
 src/pose.rs          Conservative pose classification + struct:Pose2d decoding.
-src/field.rs         REEFSCAPE wall polylines + field-card math.
+src/field.rs         Field maps (built-ins + PathPlanner JSON loader) + card math.
+scripts/fetch_field.py  Fetch/convert official field JSONs for new seasons.
 src/ui/mod.rs        Layout: HUD, tree, inspector dock, watchlist card matrix, overlays.
 src/ui/tree.rs       Collapsible topic tree model (rebuilt per frame).
 ```

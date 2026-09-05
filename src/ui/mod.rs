@@ -882,7 +882,7 @@ fn render_field_card(
         )
     };
 
-    let length = app.config.field.length_m;
+    let length = app.field_map.length_m;
     let red = app.config.field.alliance == "red";
     let fx = |x: f64| if red { length - x } else { x };
 
@@ -905,14 +905,14 @@ fn render_field_card(
         canvas_area.width as usize,
         canvas_area.height as usize,
         length,
-        app.config.field.width_m,
+        app.field_map.width_m,
     );
     let canvas = Canvas::default()
         .x_bounds([bx0, bx1])
         .y_bounds([by0, by1])
         .marker(Marker::Braille)
         .paint(|ctx| {
-            for wall in crate::field::WALLS {
+            for wall in &app.field_map.walls {
                 for seg in wall.windows(2) {
                     ctx.draw(&CanvasLine {
                         x1: fx(seg[0].0),
