@@ -25,6 +25,10 @@ pub enum Mode {
     PickPreset,
     /// Read-only configuration summary.
     SettingsView,
+    /// Enlarged field view: near-fullscreen field popup for the hovered
+    /// watchlist card. `f` opens (from Watchlist focus on a pose card)
+    /// and `f`/Esc closes.
+    FieldView,
 }
 
 /// Keyboard focus. The inspector dock is strictly passive, so focus only
@@ -195,6 +199,9 @@ pub struct App {
     /// while the topic is absent — field cards then use a neutral color.
     pub fms_red: Option<bool>,
 
+    /// Topic shown in the enlarged field view (Mode::FieldView).
+    pub field_view: Option<String>,
+
     /// Active field map (built-in or external JSON). Resolved from config
     /// at startup, on `Field: Cycle Map`, and after a config-editor reload;
     /// cached so the 120 Hz render loop never touches the filesystem.
@@ -244,6 +251,7 @@ impl App {
             toasts: Vec::new(),
             show_pose_trail: true,
             fms_red: None,
+            field_view: None,
             field_map: crate::field::FieldMap::builtin("2025-reefscape")
                 .expect("default map is built in"),
             retry_attempt: 0,
@@ -574,6 +582,9 @@ impl App {
                 Mode::Search | Mode::Edit | Mode::Connect | Mode::Palette | Mode::Prompt => {
                     self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
                 }
+                // FieldView is a passive readout: Ctrl-C closes it like
+                // Esc rather than quitting the app mid-inspection.
+                Mode::FieldView => self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
                 Mode::Normal | Mode::PickTarget | Mode::PickPreset | Mode::SettingsView => {
                     UiAction::Quit
                 }
@@ -590,6 +601,7 @@ impl App {
             Mode::PickTarget => self.handle_pick_target(key),
             Mode::PickPreset => self.handle_pick_preset(key),
             Mode::SettingsView => self.handle_settings_view(key),
+            Mode::FieldView => self.handle_field_view(key),
         }
     }
 
@@ -787,9 +799,33 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('f') => {
+                // Enlarged field view: only meaningful over a field card.
+                if let Some(topic) = cells.get(c).cloned() {
+                    if self.field_reading(&topic).is_some() {
+                        self.field_view = Some(topic);
+                        self.mode = Mode::FieldView;
+                    } else {
+                        self.toast(ToastKind::Info, "not a field topic");
+                    }
+                }
+                return UiAction::None;
+            }
             _ => {}
         }
         self.watchlist_cursor = c;
+        UiAction::None
+    }
+
+    /// Enlarged field view: `f` closes (same key that opened it); Esc is
+    /// the standard overlay escape. Everything else is ignored — the
+    /// popup is a passive readout.
+    fn handle_field_view(&mut self, key: KeyEvent) -> UiAction {
+        if matches!(key.code, KeyCode::Char('f') | KeyCode::Esc) {
+            self.mode = Mode::Normal;
+            self.field_view = None;
+            self.focus = Focus::Watchlist;
+        }
         UiAction::None
     }
 
@@ -798,6 +834,29 @@ impl App {
         self.edit_topic = Some(topic);
         self.edit_input.clear();
         self.edit_error = None;
+    }
+
+    /// Is this topic rendered as a pose field card, and what is its
+    /// current reading? True ONLY when the conservative auto-classifier
+    /// accepts the current value, or the user explicitly opted the topic
+    /// in via `Field: Toggle Pose View on Active Card` — lookalike topics
+    /// (target poses, arbitrary double[6]) stay normal value cards.
+    pub fn field_reading(&self, topic: &str) -> Option<crate::pose::PoseReading> {
+        let td = self.store.topics.get(topic)?;
+        let v = td.current.as_ref()?;
+        let forced = self
+            .config
+            .field
+            .force_pose_topics
+            .iter()
+            .any(|t| t == topic);
+        let auto = crate::pose::classify(topic, td.type_str.as_deref(), v);
+        // Forced only widens for topics the user explicitly opted in.
+        if forced {
+            auto.or_else(|| crate::field::forced_reading(v))
+        } else {
+            auto
+        }
     }
 
     /// Re-resolve the cached field map from config (palette cycle, config

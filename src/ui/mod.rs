@@ -120,6 +120,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::PickTarget => draw_pick_target(f, app),
         Mode::PickPreset => draw_pick_preset(f, app),
         Mode::SettingsView => draw_settings_view(f, app),
+        Mode::FieldView => draw_field_view(f, app),
         Mode::Normal => {}
     }
     draw_toasts(f, app);
@@ -624,35 +625,9 @@ fn array_elements(v: &crate::nt::store::NtValue) -> Vec<String> {
 /// Inner canvas rows reserved for a field card (borders + meta add 3).
 const FIELD_CARD_ROWS: usize = 14;
 
-/// Is this topic rendered as a pose field card? True ONLY when the
-/// conservative auto-classifier accepts the current value, or the user
-/// explicitly opted the topic in via `Field: Toggle Pose View on Active
-/// Card` — lookalike topics (target poses, arbitrary double[6]) stay
-/// normal value cards.
-fn card_pose(app: &App, topic: &str) -> Option<crate::pose::PoseReading> {
-    let td = app.store.topics.get(topic)?;
-    let v = td.current.as_ref()?;
-    let forced = app
-        .config
-        .field
-        .force_pose_topics
-        .iter()
-        .any(|t| t == topic);
-    let reading = {
-        let auto = crate::pose::classify(topic, td.type_str.as_deref(), v);
-        // Forced only widens for topics the user explicitly opted in.
-        if forced {
-            auto.or_else(|| crate::field::forced_reading(v))
-        } else {
-            auto
-        }
-    };
-    reading
-}
-
 /// Total terminal lines a card occupies (borders + value line(s) + meta).
 fn card_total_height(app: &App, topic: &str, width: usize) -> u16 {
-    if card_pose(app, topic).is_some() {
+    if app.field_reading(topic).is_some() {
         // 2 borders + canvas rows + meta row.
         return (FIELD_CARD_ROWS + 3) as u16;
     }
@@ -728,6 +703,16 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Style::default().fg(MUTED)
     };
+    // A LONE field card gets the entire canvas (the whole point of the
+    // watchlist then is the field); it shrinks back to card size as soon
+    // as any other topic is pinned.
+    if cells.len() == 1 {
+        if let Some(reading) = app.field_reading(&cells[0]) {
+            render_field_card(f, app, &cells[0], &reading, area, focused, true);
+            return;
+        }
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
@@ -825,7 +810,7 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
 
     let td = app.store.topics.get(topic);
     // Pose field cards: walls + robot marker + trail on a braille canvas.
-    if let Some(reading) = card_pose(app, topic) {
+    if let Some(reading) = app.field_reading(topic) {
         render_field_card(f, app, topic, &reading, rect, focused, sel);
         return;
     }
@@ -892,7 +877,37 @@ fn render_field_card(
             Rect { y: inner.y + canvas_h, height: meta_h, ..inner },
         )
     };
+    paint_field_canvas(f, canvas_area, app, topic, reading);
 
+    // Meta row: type, rate, delta - all muted (telemetry neutrality).
+    let td = app.store.topics.get(topic);
+    let ty = td.map(|t| t.data_type.as_str()).unwrap_or("?");
+    let hz = td
+        .and_then(|t| t.hz())
+        .map(|h| format!("{:.1} Hz", h))
+        .unwrap_or_else(|| "--".into());
+    let age = td
+        .and_then(|t| t.age_secs())
+        .map(fmt_delta)
+        .unwrap_or_else(|| "--".into());
+    let meta = Line::from(vec![
+        muted(ty),
+        muted("  "),
+        muted(hz),
+        muted(format!("  \u{394} {}", age)),
+    ]);
+    f.render_widget(Paragraph::new(meta), meta_area);
+}
+
+/// The bare field drawing (marks, walls, trail, robot) into `area` -
+/// shared by the watchlist card and the enlarged field view.
+fn paint_field_canvas(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    topic: &str,
+    reading: &crate::pose::PoseReading,
+) {
     let length = app.field_map.length_m;
     let red = app.config.field.alliance == "red";
     let fx = |x: f64| if red { length - x } else { x };
@@ -907,21 +922,21 @@ fn render_field_card(
     };
     let robot = (fx(reading.x), reading.y);
     // Alliance color: FMSInfo/IsRedAlliance when present, neutral cyan
-    // otherwise (bench testing — no FMS topic on the practice field).
+    // otherwise (bench testing - no FMS topic on the practice field).
     let robot_color = match app.fms_red {
         Some(true) => ROBOT_RED,
         Some(false) => ROBOT_BLUE,
         None => CYAN,
     };
     let (hdx, hdy) = reading.radians.sin_cos();
-    // Triangle marker: ~0.6 m tip, ~0.5 m base — legible at card scale.
+    // Triangle marker: ~0.6 m tip, ~0.5 m base - legible at card scale.
     let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
     let base_l = (robot.0 - 0.25 * hdx - 0.3 * hdy, robot.1 - 0.25 * hdy + 0.3 * hdx);
     let base_r = (robot.0 - 0.25 * hdx + 0.3 * hdy, robot.1 - 0.25 * hdy - 0.3 * hdx);
 
-    // Bounds must contain EVERY wall endpoint: Canvas drops a segment if
-    // either endpoint is outside the grid (walls can overshoot the nominal
-    // field in any direction — e.g. a wall rect at x = -0.025). Fit the
+    // Bounds must contain EVERY wall endpoint: Canvas drops a segment when
+    // EITHER endpoint is outside the grid (walls can overshoot the nominal
+    // field in any direction - e.g. a wall rect at x = -0.025). Fit the
     // union bbox of walls + marks, padded, aspect-preserved.
     let mut ux0 = f64::MAX;
     let mut uy0 = f64::MAX;
@@ -950,8 +965,8 @@ fn render_field_card(
     uy1 += pad_y;
     let (ucx, ucy) = ((ux0 + ux1) / 2.0, (uy0 + uy1) / 2.0);
     let ((mut bx0, mut bx1), (mut by0, mut by1)) = crate::field::fit_bounds(
-        canvas_area.width as usize,
-        canvas_area.height as usize,
+        area.width as usize,
+        area.height as usize,
         ux1 - ux0,
         uy1 - uy0,
     );
@@ -1006,7 +1021,7 @@ fn render_field_card(
                 }
             }
             // Alliance halves are tinted by wall color (blue left, red
-            // right in the blue-origin frame); no text labels — the user-
+            // right in the blue-origin frame); no text labels - the user-
             // SET x mirror moves the colors, which is indication enough.
             ctx.layer(); // robot layer paints over the walls
             if !trail.is_empty() {
@@ -1017,26 +1032,56 @@ fn render_field_card(
             }
             ctx.draw(&Points { coords: &[robot], color: robot_color });
         });
-    f.render_widget(canvas, canvas_area);
+    f.render_widget(canvas, area);
+}
 
-    // Meta row: type, rate, Δ — all muted (telemetry neutrality).
-    let td = app.store.topics.get(topic);
-    let ty = td.map(|t| t.data_type.as_str()).unwrap_or("?");
-    let hz = td
-        .and_then(|t| t.hz())
-        .map(|h| format!("{:.1} Hz", h))
-        .unwrap_or_else(|| "--".into());
-    let age = td
-        .and_then(|t| t.age_secs())
-        .map(fmt_delta)
-        .unwrap_or_else(|| "--".into());
-    let meta = Line::from(vec![
-        muted(ty),
-        muted("  "),
-        muted(hz),
-        muted(format!("  \u{394} {}", age)),
+/// Enlarged field view: a near-fullscreen popup with just the field and
+/// the live pose readout. Opened with `f` from a hovered field card;
+/// the same key (or Esc) closes it.
+fn draw_field_view(f: &mut Frame, app: &App) {
+    let Some(topic) = app.field_view.clone() else {
+        return;
+    };
+    let Some(reading) = app.field_reading(&topic) else {
+        return;
+    };
+    let area = centered_rect(f.area(), 96, 94);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
+        .title(Span::styled(
+            format!(" FIELD VIEW - {} ", topic),
+            Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Bottom row: live pose readout (mirrored like the drawing when the
+    // user-set alliance flip is active) + close hint.
+    let (canvas_area, value_area) = {
+        let value_h = 1u16.min(inner.height);
+        let canvas_h = inner.height.saturating_sub(value_h);
+        (
+            Rect { height: canvas_h, ..inner },
+            Rect { y: inner.y + canvas_h, height: value_h, ..inner },
+        )
+    };
+    paint_field_canvas(f, canvas_area, app, &topic, &reading);
+
+    let length = app.field_map.length_m;
+    let dx = if app.config.field.alliance == "red" {
+        length - reading.x
+    } else {
+        reading.x
+    };
+    let value = Line::from(vec![
+        bold(format!("  x: {:.2} m", dx)),
+        bold(format!("   y: {:.2} m", reading.y)),
+        bold(format!("   theta: {:.1}\u{b0}", reading.radians.to_degrees())),
+        dim("                                    f/Esc close"),
     ]);
-    f.render_widget(Paragraph::new(meta), meta_area);
+    f.render_widget(Paragraph::new(value), value_area);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -1051,7 +1096,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             "tab tree  1-9 presets  / find  : commands  c connect  q quit"
         }
         Focus::Watchlist => {
-            "h/j/k/l move  x remove  e edit  spc unpin  tab tree  g/G ends  1-9 presets  : commands  q quit"
+            "h/j/k/l move  x remove  e edit  spc unpin  f field  tab tree  g/G ends  1-9 presets  : commands  q quit"
         }
     };
     f.render_widget(Paragraph::new(Line::from(vec![dim(hints)])), area);

@@ -285,7 +285,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version matches Cargo.toml", "RIONT v0.3.2" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.4.0" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------
@@ -741,9 +741,32 @@ def main():
     tui.send("map"); tui.pump(0.3)
     tui.send("\r"); tui.pump(0.4)  # back to 2025-reefscape (config restored)
 
-    # dismiss the two pose cards; cursor sits on targetpose. x removes it
-    # (cursor clamps to botpose), a second x removes botpose. Battery stays.
-    tui.send("x"); tui.pump(0.2)
+    # T26h: a LONE field card fills the entire watchlist canvas.
+    tui.send(":"); tui.pump(0.2)
+    tui.send("clear"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send("/"); tui.pump(0.2)
+    tui.send("botpose"); tui.pump(0.3)
+    tui.send(" "); tui.pump(0.2)
+    tui.send("\x1b"); tui.pump(0.6)
+    snap = tui.lines()
+    # the card meta (double[] + rate) sits at the BOTTOM of the filled
+    # canvas; the tree also shows [double[]] tags, so take the LAST hit
+    meta_rows = [j for j, sl in enumerate(snap) if "double[]  " in sl]
+    meta_row = meta_rows[-1] if meta_rows else -1
+    check("T26h lone field card fills the watchlist canvas",
+          meta_row is not None and meta_row >= 15, f"meta_row={meta_row}")
+    tui.send("f"); tui.pump(0.5)
+    txt = tui.text()
+    check("T26i enlarged field view opens",
+          "FIELD VIEW" in txt and "x:" in txt and "y:" in txt, txt[:900])
+
+    # T26j: the same key closes it.
+    tui.send("f"); tui.pump(0.4)
+    check("T26j same key closes the field view",
+          "FIELD VIEW" not in tui.text(), tui.text()[:400])
+
+    # cleanup: watchlist now holds only botpose; remove it.
     tui.send("x"); tui.pump(0.3)
 
     # T14: quit ---------------------------------------------------------------------
