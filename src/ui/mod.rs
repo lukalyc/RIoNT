@@ -31,6 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MUTED: Color = Color::Rgb(0x7C, 0x6F, 0x64); // rates, deltas, chrome text
 const BORDER_GREY: Color = Color::Rgb(0x3C, 0x38, 0x36); // inactive borders
+const MARK_GREY: Color = Color::Rgb(0x2E, 0x2B, 0x28); // field tape/game-line marks
 const AMBER: Color = Color::Rgb(0xFA, 0xBD, 0x2F); // tree focus / strings
 const CYAN: Color = Color::Cyan; // numbers / watchlist focus / array brackets
 
@@ -912,6 +913,18 @@ fn render_field_card(
         .y_bounds([by0, by1])
         .marker(Marker::Braille)
         .paint(|ctx| {
+            // Game-line marks sit behind the walls, dimmer still.
+            for mark in &app.field_map.marks {
+                for seg in mark.windows(2) {
+                    ctx.draw(&CanvasLine {
+                        x1: fx(seg[0].0),
+                        y1: seg[0].1,
+                        x2: fx(seg[1].0),
+                        y2: seg[1].1,
+                        color: MARK_GREY,
+                    });
+                }
+            }
             for wall in &app.field_map.walls {
                 for seg in wall.windows(2) {
                     ctx.draw(&CanvasLine {

@@ -721,7 +721,7 @@ def main():
     tui.send("map"); tui.pump(0.3)
     tui.send("\r"); tui.pump(0.5)
     check("T26f cycle map command confirms",
-          "field map: 2026-tba" in tui.text(), tui.text()[-600:])
+          "field map: 2026-rebuilt" in tui.text(), tui.text()[-600:])
     tui.send(":"); tui.pump(0.2)
     tui.send("cycle"); tui.pump(0.2)
     tui.send("map"); tui.pump(0.3)

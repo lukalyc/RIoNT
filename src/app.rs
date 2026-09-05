@@ -1057,8 +1057,8 @@ impl App {
                 self.toast(
                     ToastKind::Success,
                     format!(
-                        "field map: {} ({:.2} x {:.2} m)",
-                        m.name, m.length_m, m.width_m
+                        "field map: {} — {} ({:.2} x {:.2} m)",
+                        m.name, m.game, m.length_m, m.width_m
                     ),
                 );
                 UiAction::None

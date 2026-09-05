@@ -252,16 +252,19 @@ and a muted grey pose trail.
   300 points / 10 s of server time.
 - **Field size / season map:** the map comes from `config.json` →
   `"field": {"map": ...}` (built-ins: `2024-crescendo`, `2025-reefscape`,
-  `2026-tba`) or — for new seasons without a rebuild — an external
-  PathPlanner-format JSON via `"field": {"walls_file": "fields/<name>.json"}`
-  (keys: `game`, `fieldLength`, `fieldWidth`, `walls` — meters, blue origin).
-  The palette's `Field: Cycle Map` switches built-ins in-app. Generate the
-  external file with `python scripts/fetch_field.py 2026` (downloads from
-  PathPlanner) or `--from-file <downloaded.json>`; when the official 2026
-  map is published this is a config-only swap, no rebuild. A missing/broken
-  `walls_file` falls back to the built-in map with a warning toast.
-  Built-in interior obstacles are documented approximations — official
-  geometry always comes from the field JSON.
+  `2026-rebuilt`). Maps are generated PROGRAMMATICALLY:
+  `python scripts/fetch_field.py 2026` downloads Choreo's official vector
+  field drawing (SVG), traces every wall/obstacle/tape line through the
+  SVG transform stack, and writes `fields/2026-rebuilt.json` — no hand
+  tracing. The app auto-loads `fields/<map>.json` when present, so a new
+  season is a one-command, no-rebuild swap. A file can also be set
+  explicitly via `"field": {"walls_file": ...}` (PathPlanner-style JSON:
+  `game`, `fieldLength`, `fieldWidth`, `walls`, `marks` — meters, blue
+  origin). A missing/broken file falls back to the built-in map with a
+  warning toast. Built-in obstacles for 2024/2025 are documented
+  approximations (Choreo's 2025 SVG is a stylized illustration and is
+  deliberately not shipped — see the script's source notes); the 2026 map
+  is generated from the official drawing.
 - Struct topics that are not `struct:Pose2d` keep rendering as `<N bytes>`;
   `struct:Pose2d` renders `(x m, y m, heading°)` in tree, inspector and
   cards.

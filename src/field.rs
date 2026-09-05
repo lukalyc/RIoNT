@@ -25,14 +25,19 @@ use serde::Deserialize;
 /// A field map: extents + wall polylines (meters, blue origin).
 #[derive(Debug, Clone)]
 pub struct FieldMap {
+    /// Map KEY (BUILTIN_MAPS entry / file stem) — used by Cycle Map.
     pub name: String,
+    /// Display title from the JSON's "game" field (may equal name).
+    pub game: String,
     pub length_m: f64,
     pub width_m: f64,
     pub walls: Vec<Vec<(f64, f64)>>,
+    /// Game-line/tape marks — same geometry, drawn dimmer than walls.
+    pub marks: Vec<Vec<(f64, f64)>>,
 }
 
 /// Built-in maps, in cycle order (palette `Field: Cycle Map`).
-pub const BUILTIN_MAPS: [&str; 3] = ["2024-crescendo", "2025-reefscape", "2026-tba"];
+pub const BUILTIN_MAPS: [&str; 3] = ["2024-crescendo", "2025-reefscape", "2026-rebuilt"];
 
 /// 2024 CRESCENDO: 16.54 x 8.21 m. Perimeter exact; subwoofer/amp/stage
 /// are approximations pending official PathPlanner geometry.
@@ -77,8 +82,9 @@ const REEFSCAPE_WALLS: &[&[(f64, f64)]] = &[
     &[(15.34, 3.4), (15.34, 4.8)],
 ];
 
-/// 2026 season: game not yet in this build. Perimeter only — the official
-/// map arrives via `scripts/fetch_field.py` + `config.field.walls_file`.
+/// 2026 season: the official map ships as fields/2026-rebuilt.json
+/// (generated from Choreo's vector drawing by scripts/fetch_field.py).
+/// This perimeter-only const is the fallback when that file is absent.
 const TBA_2026_WALLS: &[&[(f64, f64)]] = &[
     &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
 ];
@@ -98,6 +104,8 @@ struct FieldJson {
     fieldWidth: f64,
     #[serde(default)]
     walls: Vec<Vec<[f64; 2]>>,
+    #[serde(default)]
+    marks: Vec<Vec<[f64; 2]>>,
 }
 
 impl FieldMap {
@@ -105,14 +113,16 @@ impl FieldMap {
         let (length_m, width_m, walls) = match name {
             "2024-crescendo" => (16.54, 8.21, CRESCENDO_WALLS),
             "2025-reefscape" => (16.54, 8.21, REEFSCAPE_WALLS),
-            "2026-tba" => (16.54, 8.21, TBA_2026_WALLS),
+            "2026-rebuilt" => (16.541, 8.0692, TBA_2026_WALLS),
             _ => return None,
         };
         Some(FieldMap {
             name: name.to_string(),
+            game: name.to_string(),
             length_m,
             width_m,
             walls: walls.iter().map(|p| p.to_vec()).collect(),
+            marks: Vec::new(),
         })
     }
 
@@ -134,7 +144,12 @@ impl FieldMap {
             .into_iter()
             .map(|poly| poly.into_iter().map(|p| (p[0], p[1])).collect())
             .collect();
-        if walls.iter().any(|p| {
+        let marks: Vec<Vec<(f64, f64)>> = f
+            .marks
+            .into_iter()
+            .map(|poly| poly.into_iter().map(|p| (p[0], p[1])).collect())
+            .collect();
+        if walls.iter().chain(marks.iter()).any(|p| {
             p.is_empty()
                 || p.iter()
                     .any(|(x, y)| !x.is_finite() || !y.is_finite())
@@ -142,17 +157,23 @@ impl FieldMap {
             return Err("field json: non-finite wall coordinates".into());
         }
         Ok(FieldMap {
-            name: f.game.unwrap_or_else(|| name.to_string()),
+            name: name.to_string(),
+            game: f.game.unwrap_or_else(|| name.to_string()),
             length_m: f.fieldLength,
             width_m: f.fieldWidth,
             walls,
+            marks,
         })
     }
 }
 
 /// Resolve the active field map from config. Returns the map plus an
 /// optional warning (walls_file failed to read/parse) for the caller to
-/// toast — the built-in fallback always succeeds.
+/// toast — the built-in fallback always succeeds. Priority:
+///   1. config.field.walls_file (explicit external JSON)
+///   2. fields/<map>.json next to the launch directory — the drop-in slot
+///      for generated maps (scripts/fetch_field.py)
+///   3. the built-in const for that name (documented approximations)
 pub fn resolve(config: &crate::config::Config) -> (FieldMap, Option<String>) {
     if let Some(path) = &config.field.walls_file {
         if !path.is_empty() {
@@ -166,6 +187,11 @@ pub fn resolve(config: &crate::config::Config) -> (FieldMap, Option<String>) {
                     Some(format!("walls_file {}: {}", path, e)),
                 ),
             };
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(format!("fields/{}.json", config.field.map)) {
+        if let Ok(m) = FieldMap::from_json(&text, &config.field.map) {
+            return (m, None);
         }
     }
     (builtin_map(config), None)
@@ -285,7 +311,9 @@ mod tests {
             "walls": [[[0,0],[16.54,0],[16.54,8.21],[0,8.21],[0,0]]]
         }"#;
         let m = FieldMap::from_json(text, "file.json").unwrap();
-        assert_eq!(m.name, "NextSeason");
+        // The map KEY stays the file/builtin name; "game" is display-only.
+        assert_eq!(m.name, "file.json");
+        assert_eq!(m.game, "NextSeason");
         assert_eq!((m.length_m, m.width_m), (16.54, 8.21));
         assert_eq!(m.walls[0].len(), 5);
     }
