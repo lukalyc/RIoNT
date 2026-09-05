@@ -286,7 +286,7 @@ def main():
     m = re.search(r"(\d+) topics", ln0)
     check("T1e topic count > 10", m and int(m.group(1)) > 10, ln0)
     check("T1f no global Hz metric", " Hz" not in ln0 and "rtt" not in ln0, ln0)
-    check("T1g version matches Cargo.toml", "RIONT v0.5.1" in ln0, ln0)
+    check("T1g version matches Cargo.toml", "RIONT v0.5.2" in ln0, ln0)
     check("T1g ONLINE rendered bold+green", tui.styled(0, "ONLINE", "bold"), ln0)
 
     # T2: initial tree, collapsed -------------------------------------------

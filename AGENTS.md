@@ -24,15 +24,22 @@ When in doubt between PATCH and MINOR, choose MINOR.
 
 - `Cargo.toml` → `version = "x.y.z"` — **required, this is the only place
   the version lives in code.**
+- `CHANGELOG.md` — **required on every bump**: add an entry for the new
+  version at the TOP of the file (Keep a Changelog format) describing
+  what changed. Added/Changed/Fixed/Removed sections as applicable.
+  Write it for a pit user, not for reviewers ("overlay groups let you
+  compare odometry and vision on one field", not "refactored
+  paint_field_canvas").
 - `README.md` — update the headline line (`vX.Y.Z presents …`) and the
   ASCII mockup's HUD line if it shows a version.
 
 ### 3. How
 
-- Make the bump **in the same commit** as the change it belongs to. Do not
-  leave the bump for a later "housekeeping" commit; every commit should be
-  identifiable by the version it ships.
-- Multiple changes in one commit: ONE bump for the most significant change.
+- Make the bump and changelog entry **in the same commit** as the change
+  they belong to. Do not leave them for a later "housekeeping" commit;
+  every commit should be identifiable by the version it ships.
+- Multiple changes in one commit: ONE bump for the most significant
+  change, with the changelog entry covering everything in the commit.
 - Multiple unrelated commits in a session: bump per commit (PATCH is fine
   for each if that's all it warrants).
 
@@ -43,6 +50,8 @@ When in doubt between PATCH and MINOR, choose MINOR.
   `python test/harness.py` per README's Testing section before committing).
 - `git grep` the old version string afterwards; it should only remain in
   historical/changelog contexts, never in live code or HUD text.
+- Confirm `CHANGELOG.md`'s newest heading matches the new version — an
+  unbumped or unlogged change is an incomplete change.
 
 ### Rationale
 
