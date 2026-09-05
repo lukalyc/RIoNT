@@ -18,6 +18,8 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
+    symbols::Marker,
+    widgets::canvas::{Canvas, Line as CanvasLine, Points},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
@@ -504,6 +506,12 @@ fn value_lines(v: &crate::nt::store::NtValue, width: usize) -> Vec<Line<'static>
             ellipsize(&v.format(), w),
             Style::default().fg(AMBER),
         ))],
+        // Decoded struct:Pose2d: string-like single-line card, warm amber
+        // like strings (format already carries the units/degree sign).
+        V::Pose2d { .. } => vec![Line::from(Span::styled(
+            ellipsize(&v.format(), w),
+            Style::default().fg(AMBER),
+        ))],
         arr @ (V::BooleanArray(_) | V::DoubleArray(_) | V::IntArray(_) | V::StringArray(_)) => {
             let elems = array_elements(arr);
             // Cyan bracket grouping, neutral values; wrap dense arrays across
@@ -602,8 +610,41 @@ fn array_elements(v: &crate::nt::store::NtValue) -> Vec<String> {
     }
 }
 
+/// Inner canvas rows reserved for a field card (borders + meta add 3).
+const FIELD_CARD_ROWS: usize = 14;
+
+/// Is this topic rendered as a pose field card? True ONLY when the
+/// conservative auto-classifier accepts the current value, or the user
+/// explicitly opted the topic in via `Field: Toggle Pose View on Active
+/// Card` — lookalike topics (target poses, arbitrary double[6]) stay
+/// normal value cards.
+fn card_pose(app: &App, topic: &str) -> Option<crate::pose::PoseReading> {
+    let td = app.store.topics.get(topic)?;
+    let v = td.current.as_ref()?;
+    let forced = app
+        .config
+        .field
+        .force_pose_topics
+        .iter()
+        .any(|t| t == topic);
+    let reading = {
+        let auto = crate::pose::classify(topic, td.type_str.as_deref(), v);
+        // Forced only widens for topics the user explicitly opted in.
+        if forced {
+            auto.or_else(|| crate::field::forced_reading(v))
+        } else {
+            auto
+        }
+    };
+    reading
+}
+
 /// Total terminal lines a card occupies (borders + value line(s) + meta).
 fn card_total_height(app: &App, topic: &str, width: usize) -> u16 {
+    if card_pose(app, topic).is_some() {
+        // 2 borders + canvas rows + meta row.
+        return (FIELD_CARD_ROWS + 3) as u16;
+    }
     let vlines = match app.store.topics.get(topic).and_then(|t| t.current.as_ref()) {
         Some(v) => {
             use crate::nt::store::NtValue as V;
@@ -772,6 +813,11 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
     f.render_widget(block, rect);
 
     let td = app.store.topics.get(topic);
+    // Pose field cards: walls + robot marker + trail on a braille canvas.
+    if let Some(reading) = card_pose(app, topic) {
+        render_field_card(f, app, topic, &reading, rect, focused, sel);
+        return;
+    }
     let mut lines: Vec<Line> = match td.and_then(|t| t.current.as_ref()) {
         Some(v) => value_lines(v, inner.width as usize),
         None => vec![Line::from(dim("-"))],
@@ -793,9 +839,120 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-// ---------------------------------------------------------------------------
-// status bar
-// ---------------------------------------------------------------------------
+/// Pose field card: braille canvas — walls (muted), trail (muted), robot
+/// triangle (bright cyan, on top). Coordinates are meters in the
+/// blue-origin field frame; `fx` applies the USER-SET alliance mirror so
+/// a red-origin user sees the field from their own side. Stored values
+/// and the trail buffer are never transformed.
+fn render_field_card(
+    f: &mut Frame,
+    app: &App,
+    topic: &str,
+    reading: &crate::pose::PoseReading,
+    rect: Rect,
+    focused: bool,
+    sel: bool,
+) {
+    let accent = if focused { CYAN } else { AMBER };
+    let border_style = if sel {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(BORDER_GREY)
+    };
+    let title_style = if sel {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED)
+    };
+    let title = short_name(topic, rect.width.saturating_sub(2) as usize);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(format!(" {} ", title), title_style));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Bottom row = same muted meta as value cards; canvas fills the rest.
+    let (canvas_area, meta_area) = {
+        let meta_h = 1u16.min(inner.height);
+        let canvas_h = inner.height.saturating_sub(meta_h);
+        (
+            Rect { height: canvas_h, ..inner },
+            Rect { y: inner.y + canvas_h, height: meta_h, ..inner },
+        )
+    };
+
+    let length = app.config.field.length_m;
+    let red = app.config.field.alliance == "red";
+    let fx = |x: f64| if red { length - x } else { x };
+
+    let trail: Vec<(f64, f64)> = if app.show_pose_trail {
+        app.store
+            .pose_trail(topic)
+            .map(|t| t.iter().map(|(x, y, _)| (fx(*x), *y)).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let robot = (fx(reading.x), reading.y);
+    let (hdx, hdy) = reading.radians.sin_cos();
+    // Triangle marker: ~0.6 m tip, ~0.5 m base — legible at card scale.
+    let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
+    let base_l = (robot.0 - 0.25 * hdx - 0.3 * hdy, robot.1 - 0.25 * hdy + 0.3 * hdx);
+    let base_r = (robot.0 - 0.25 * hdx + 0.3 * hdy, robot.1 - 0.25 * hdy - 0.3 * hdx);
+
+    let ((bx0, bx1), (by0, by1)) = crate::field::fit_bounds(
+        canvas_area.width as usize,
+        canvas_area.height as usize,
+        length,
+        app.config.field.width_m,
+    );
+    let canvas = Canvas::default()
+        .x_bounds([bx0, bx1])
+        .y_bounds([by0, by1])
+        .marker(Marker::Braille)
+        .paint(|ctx| {
+            for wall in crate::field::WALLS {
+                for seg in wall.windows(2) {
+                    ctx.draw(&CanvasLine {
+                        x1: fx(seg[0].0),
+                        y1: seg[0].1,
+                        x2: fx(seg[1].0),
+                        y2: seg[1].1,
+                        color: BORDER_GREY,
+                    });
+                }
+            }
+            ctx.layer(); // robot layer paints over the walls
+            if !trail.is_empty() {
+                ctx.draw(&Points { coords: &trail, color: MUTED });
+            }
+            for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
+                ctx.draw(&CanvasLine { x1: a.0, y1: a.1, x2: b.0, y2: b.1, color: CYAN });
+            }
+            ctx.draw(&Points { coords: &[robot], color: CYAN });
+        });
+    f.render_widget(canvas, canvas_area);
+
+    // Meta row: type, rate, Δ — all muted (telemetry neutrality).
+    let td = app.store.topics.get(topic);
+    let ty = td.map(|t| t.data_type.as_str()).unwrap_or("?");
+    let hz = td
+        .and_then(|t| t.hz())
+        .map(|h| format!("{:.1} Hz", h))
+        .unwrap_or_else(|| "--".into());
+    let age = td
+        .and_then(|t| t.age_secs())
+        .map(fmt_delta)
+        .unwrap_or_else(|| "--".into());
+    let meta = Line::from(vec![
+        muted(ty),
+        muted("  "),
+        muted(hz),
+        muted(format!("  \u{394} {}", age)),
+    ]);
+    f.render_widget(Paragraph::new(meta), meta_area);
+}
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // Hints list only keys that work in the current state — the empty

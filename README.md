@@ -228,6 +228,35 @@ The live watchlist is also persisted to `config.json` (`"last_view"`, same
 `topic` / `prefix/*` format) after every change, so a restart or crash never
 loses your view — it is restored on the next launch.
 
+## Field Visualization
+
+A pinned topic whose value is a robot pose renders as a **field card**: a
+braille top-down field with walls, a cyan robot triangle (position + heading)
+and a muted grey pose trail.
+
+- **Auto-detected, conservatively:** only exact Limelight pose topics
+  (`botpose`, `botpose_wpiblue`, `botpose_wpired`, `botpose_orb_wpiblue`,
+  `botpose_orb_wpired`, any camera prefix) and WPILib `struct:Pose2d` topics.
+  Lookalike topics — target poses, arbitrary `double[6]` arrays, odometry
+  scalars — stay ordinary value cards. Nothing fuzzy, nothing inferred.
+- **Manual opt-in:** `Field: Toggle Pose View on Active Card` in the palette
+  forces (or un-forces) a field card on the active topic — for pose-ish
+  topics the auto-classifier deliberately refuses. `double[6]` arrays are
+  read Limelight-style (x, y, ..., yaw in degrees); anything shorter is
+  refused rather than guessed.
+- **Alliance origin is MANUAL ONLY.** The app never flips axes by itself:
+  `Field: Set Alliance Blue` (default, no flip) / `Field: Set Alliance Red`
+  mirror field-card x only; stored values and the trail buffer are never
+  transformed. It persists in `config.json` (`"field": {"alliance": ...}`).
+- **Trail:** on by default, toggle with `Field: Toggle Trail`; capped at
+  300 points / 10 s of server time.
+- **Field size:** `config.json` → `"field": {"length_m": 16.54,
+  "width_m": 8.21}` (2025 REEFSCAPE defaults). Wall polylines live in
+  `src/field.rs` — a season swap is a data-only change.
+- Struct topics that are not `struct:Pose2d` keep rendering as `<N bytes>`;
+  `struct:Pose2d` renders `(x m, y m, heading°)` in tree, inspector and
+  cards.
+
 ## Architecture
 
 ```
@@ -235,7 +264,9 @@ src/main.rs          CLI (team/IP resolve), terminal setup, editor suspend/resum
 src/app.rs           App state, key handling, palette/toasts. Pure logic, no rendering.
 src/config.rs        ~/.config/riont/config.json: targets, presets, SSH settings.
 src/nt/client.rs     Async NT4 task + background SSH restart. Owns the socket, never blocks the UI.
-src/nt/store.rs      Topic store: values, metadata, Hz windowing.
+src/nt/store.rs      Topic store: values, metadata, Hz windowing, pose trails.
+src/pose.rs          Conservative pose classification + struct:Pose2d decoding.
+src/field.rs         REEFSCAPE wall polylines + field-card math.
 src/ui/mod.rs        Layout: HUD, tree, inspector dock, watchlist card matrix, overlays.
 src/ui/tree.rs       Collapsible topic tree model (rebuilt per frame).
 ```

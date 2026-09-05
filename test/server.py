@@ -60,4 +60,12 @@ while True:
         stale_counter += 1
         sd.putNumber("StaleCounter", stale_counter)
 
+    # pose sources for the field-card checks: an exact Limelight name
+    # (auto-classifies) and a lookalike that must NOT auto-classify.
+    sd.putNumberArray(
+        "botpose_wpiblue",
+        [2.0 + 0.8 * math.sin(t * 0.8), 4.105 + 0.4 * math.cos(t * 0.8), 0.0, 0.0, 0.0, 90.0],
+    )
+    sd.putNumberArray("targetpose", [1.0, 2.0, 0.0, 0.0, 0.0, 45.0])
+
     time.sleep(0.05)

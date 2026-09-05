@@ -29,6 +29,34 @@ impl Default for SystemSettings {
     }
 }
 
+/// Field geometry + user-chosen rendering options for pose visualization.
+/// `alliance` flips the rendered field mirror ONLY when the user sets it
+/// explicitly — the app never infers an alliance from topic names.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FieldSettings {
+    pub length_m: f64,
+    pub width_m: f64,
+    pub alliance: String,
+    /// Topics the user explicitly marked as robot pose (rendered as a
+    /// field card even though the conservative auto-classifier passes on
+    /// them). Managed by later user commands; persisted here only.
+    #[serde(default)]
+    pub force_pose_topics: Vec<String>,
+}
+
+impl Default for FieldSettings {
+    fn default() -> Self {
+        FieldSettings {
+            // 2025 REEFSCAPE: 16.54 m x 8.21 m, blue origin at the blue
+            // driver-station wall, +x into the field.
+            length_m: 16.54,
+            width_m: 8.21,
+            alliance: "blue".into(),
+            force_pose_topics: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
@@ -46,6 +74,8 @@ pub struct Config {
     pub presets: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub system: SystemSettings,
+    #[serde(default)]
+    pub field: FieldSettings,
     /// Set by `load()` when the on-disk file failed to parse: the in-memory
     /// contents are then DEFAULTS, and a later `save()` must not silently
     /// overwrite the user's (fixable) file with them — see `save()`.
@@ -65,6 +95,7 @@ impl Config {
             ],
             presets: std::collections::BTreeMap::new(),
             system: SystemSettings::default(),
+            field: FieldSettings::default(),
             was_corrupt: false,
         }
     }

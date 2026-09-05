@@ -54,6 +54,10 @@ pub enum NtUpdate {
         data_type: Option<NtType>,
         persistent: Option<bool>,
         retained: Option<bool>,
+        /// Wire type string from announce (e.g. "struct:Pose2d").
+        type_str: Option<String>,
+        /// Advertised structSchema property (e.g. "Pose2d{...}").
+        struct_schema: Option<String>,
     },
     /// Topic deleted on the server.
     TopicRemoved(String),
@@ -568,7 +572,17 @@ fn handle_text(
                     data_type: Some(NtType::from_str(type_str)),
                     persistent: props.get("persistent").and_then(|v| v.as_bool()),
                     retained: props.get("retained").and_then(|v| v.as_bool()),
-                }).ok();
+                    type_str: if type_str.is_empty() {
+                        None
+                    } else {
+                        Some(type_str.to_string())
+                    },
+                    struct_schema: props
+                        .get("structSchema")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                })
+                .ok();
             }
             "unannounce" => {
                 let raw = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -589,7 +603,13 @@ fn handle_text(
                     data_type: None,
                     persistent: update.get("persistent").and_then(|v| v.as_bool()),
                     retained: update.get("retained").and_then(|v| v.as_bool()),
-                }).ok();
+                    type_str: None,
+                    struct_schema: update
+                        .get("structSchema")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                })
+                .ok();
             }
             other => {
                 debug_msg(log, &format!("ignore text method={}", other));
@@ -740,6 +760,16 @@ fn to_msgpack(v: &NtValue) -> (&'static str, u64, Mv) {
         ),
         NtValue::Json(s) => ("json", DT_STRING, Mv::String(s.clone().into())),
         NtValue::Raw(b) => ("msgpack", DT_BINARY, Mv::Binary(b.clone())),
+        // Pose2d values are never user-published (not writable), but a
+        // programmatic round-trip encodes the canonical 24-byte LE struct
+        // payload so the wire format stays valid.
+        NtValue::Pose2d { x, y, radians } => {
+            let mut b = Vec::with_capacity(24);
+            b.extend_from_slice(&x.to_le_bytes());
+            b.extend_from_slice(&y.to_le_bytes());
+            b.extend_from_slice(&radians.to_le_bytes());
+            ("struct:Pose2d", DT_BINARY, Mv::Binary(b))
+        }
     }
 }
 

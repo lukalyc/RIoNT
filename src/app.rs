@@ -79,12 +79,16 @@ pub enum Command {
     WatchlistLoadPreset,
     WatchlistClear,
     WatchlistRestorePrevious,
+    FieldAllianceBlue,
+    FieldAllianceRed,
+    FieldTogglePoseView,
+    FieldToggleTrail,
     ReconnectNt,
     RestartRobotCode,
     CopyTopicPath,
 }
 
-pub const COMMANDS: [(Command, &str); 11] = [
+pub const COMMANDS: [(Command, &str); 15] = [
     (Command::SettingsOpen, "Settings: Open Configuration"),
     (Command::SettingsView, "Settings: View Settings"),
     (Command::SettingsAddTarget, "Settings: Add Robot Target"),
@@ -93,6 +97,13 @@ pub const COMMANDS: [(Command, &str); 11] = [
     (Command::WatchlistLoadPreset, "Watchlist: Load Preset"),
     (Command::WatchlistClear, "Watchlist: Clear All"),
     (Command::WatchlistRestorePrevious, "Watchlist: Restore Previous"),
+    (Command::FieldAllianceBlue, "Field: Set Alliance Blue"),
+    (Command::FieldAllianceRed, "Field: Set Alliance Red"),
+    (
+        Command::FieldTogglePoseView,
+        "Field: Toggle Pose View on Active Card",
+    ),
+    (Command::FieldToggleTrail, "Field: Toggle Trail"),
     (Command::ReconnectNt, "NetworkTables: Reconnect Socket"),
     (Command::RestartRobotCode, "System: Restart Robot Code"),
     (Command::CopyTopicPath, "Copy Active Topic Path"),
@@ -175,6 +186,9 @@ pub struct App {
     // toasts
     pub toasts: Vec<Toast>,
 
+    /// Pose-trail dots on field cards (palette `Field: Toggle Trail`).
+    pub show_pose_trail: bool,
+
     // reconnect attempts since the last successful connection
     pub retry_attempt: u32,
 }
@@ -217,6 +231,7 @@ impl App {
             palette_matches: Vec::new(),
             palette_cursor: 0,
             toasts: Vec::new(),
+            show_pose_trail: true,
             retry_attempt: 0,
         };
         if let Some(e) = config_err {
@@ -938,6 +953,61 @@ impl App {
             }
             Command::WatchlistRestorePrevious => {
                 self.restore_previous_watchlist();
+                UiAction::None
+            }
+            // Alliance is USER-SET ONLY: the app never infers it from topic
+            // names or values. The setting affects rendering only (x mirror
+            // on the field card); stored NT values are never transformed.
+            Command::FieldAllianceBlue => {
+                self.config.field.alliance = "blue".into();
+                if let Err(e) = self.config.save() {
+                    self.toast(ToastKind::Error, format!("save config: {}", e));
+                }
+                self.toast(ToastKind::Info, "field: blue origin (no x flip)");
+                UiAction::None
+            }
+            Command::FieldAllianceRed => {
+                self.config.field.alliance = "red".into();
+                if let Err(e) = self.config.save() {
+                    self.toast(ToastKind::Error, format!("save config: {}", e));
+                }
+                self.toast(ToastKind::Info, "field: red origin (field cards mirror x)");
+                UiAction::None
+            }
+            Command::FieldTogglePoseView => {
+                // Opt-in override for ambiguous topics: the auto-classifier
+                // stays conservative; only this user action widens it.
+                match self.active_topic() {
+                    Some(topic) => {
+                        let forced = &mut self.config.field.force_pose_topics;
+                        let msg = match forced.iter().position(|t| t == &topic) {
+                            Some(pos) => {
+                                forced.remove(pos);
+                                format!("normal card: {}", topic)
+                            }
+                            None => {
+                                forced.push(topic.clone());
+                                format!("field card: {}", topic)
+                            }
+                        };
+                        if let Err(e) = self.config.save() {
+                            self.toast(ToastKind::Error, format!("save config: {}", e));
+                        }
+                        self.toast(ToastKind::Success, msg);
+                    }
+                    None => self.toast(ToastKind::Warn, "no topic under cursor"),
+                }
+                UiAction::None
+            }
+            Command::FieldToggleTrail => {
+                self.show_pose_trail = !self.show_pose_trail;
+                self.toast(
+                    ToastKind::Info,
+                    format!(
+                        "pose trail {}",
+                        if self.show_pose_trail { "on" } else { "off" }
+                    ),
+                );
                 UiAction::None
             }
             Command::CopyTopicPath => {

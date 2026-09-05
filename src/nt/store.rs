@@ -16,6 +16,8 @@ pub enum NtType {
     StringArray,
     Json,
     Raw,
+    /// Decoded WPILib `struct:Pose2d` (see pose::decode_pose2d).
+    Pose2d,
     Unknown,
 }
 
@@ -32,6 +34,7 @@ impl NtType {
             "string[]" => NtType::StringArray,
             "json" => NtType::Json,
             "raw" | "msgpack" => NtType::Raw,
+            "struct:Pose2d" | "pose2d" => NtType::Pose2d,
             _ => NtType::Unknown,
         }
     }
@@ -48,6 +51,7 @@ impl NtType {
             NtType::StringArray => "string[]",
             NtType::Json => "json",
             NtType::Raw => "raw",
+            NtType::Pose2d => "pose2d",
             NtType::Unknown => "?",
         }
     }
@@ -74,6 +78,8 @@ pub enum NtValue {
     StringArray(Vec<String>),
     Json(String),
     Raw(Vec<u8>),
+    /// Decoded WPILib Pose2d: meters + radians, blue-alliance origin.
+    Pose2d { x: f64, y: f64, radians: f64 },
 }
 
 impl NtValue {
@@ -89,6 +95,7 @@ impl NtValue {
             NtValue::StringArray(_) => "string[]",
             NtValue::Json(_) => "json",
             NtValue::Raw(_) => "raw",
+            NtValue::Pose2d { .. } => "pose2d",
         }
     }
 
@@ -123,19 +130,27 @@ impl NtValue {
             NtValue::StringArray(v) => format!("[{}]", v.join(", ")),
             NtValue::Json(s) => s.clone(),
             NtValue::Raw(b) => format!("<{} bytes>", b.len()),
+            NtValue::Pose2d { x, y, radians } => format!(
+                "({:.2} m, {:.2} m, {:.1}\u{00b0})",
+                x,
+                y,
+                radians.to_degrees()
+            ),
         }
     }
 }
 
 /// One topic + its live stream metadata.
 #[derive(Debug)]
-#[allow(dead_code)] // framework fields kept for upcoming features
 pub struct TopicData {
     pub name: String,
     /// Server-assigned topic id (from SetTopic), 0 until known.
     pub id: u64,
     pub data_type: NtType,
     pub type_str: Option<String>,
+    /// Advertised `structSchema` announce property (needed to decode
+    /// struct-typed raw payloads; see pose::decode_pose2d).
+    pub struct_schema: Option<String>,
     pub persistent: bool,
     pub retained: bool,
     pub current: Option<NtValue>,
@@ -143,9 +158,15 @@ pub struct TopicData {
     pub last_server_ts: Option<u64>,
     /// Recent update instants (pruned to ~2s) for Hz estimation.
     hz_samples: VecDeque<Instant>,
+    /// Pose trail for field rendering: (x_m, y_m, server_ts_us). Only
+    /// populated for topics that classify as a robot pose (pose::classify).
+    pose_trail: VecDeque<(f64, f64, u64)>,
 }
 
 const HZ_WINDOW: f64 = 2.0;
+/// Pose trail caps: 300 points or 10 s of server time, whichever first.
+const POSE_TRAIL_CAP: usize = 300;
+const POSE_TRAIL_WINDOW_US: u64 = 10_000_000;
 
 impl TopicData {
     fn new(name: String) -> Self {
@@ -154,16 +175,28 @@ impl TopicData {
             id: 0,
             data_type: NtType::Unknown,
             type_str: None,
+            struct_schema: None,
             persistent: false,
             retained: false,
             current: None,
             last_update: None,
             last_server_ts: None,
             hz_samples: VecDeque::new(),
+            pose_trail: VecDeque::new(),
         }
     }
 
     fn apply(&mut self, v: NtValue, server_ts: u64, now: Instant) {
+        // Struct-aware decode: a `struct:Pose2d` topic's binary payload
+        // becomes a real pose value; unknown struct types stay raw — never
+        // guess a schema we were not told about.
+        let decoded = match &v {
+            NtValue::Raw(bytes) if self.type_str.as_deref() == Some("struct:Pose2d") => {
+                crate::pose::decode_pose2d(bytes, self.struct_schema.as_deref())
+            }
+            _ => None,
+        };
+        let v = decoded.unwrap_or(v);
         self.current = Some(v.clone());
         self.last_update = Some(now);
         self.last_server_ts = Some(server_ts);
@@ -176,6 +209,26 @@ impl TopicData {
         while self.hz_samples.front().is_some_and(|t| *t < cutoff) {
             self.hz_samples.pop_front();
         }
+        // Pose trail: only for values that classify (cheap exact-name/type
+        // check); non-pose topics never allocate trail entries.
+        if let Some(p) = crate::pose::classify(&self.name, self.type_str.as_deref(), &v) {
+            self.pose_trail.push_back((p.x, p.y, server_ts));
+            while self.pose_trail.len() > POSE_TRAIL_CAP {
+                self.pose_trail.pop_front();
+            }
+            while self
+                .pose_trail
+                .front()
+                .is_some_and(|(_, _, ts)| *ts + POSE_TRAIL_WINDOW_US <= server_ts)
+            {
+                self.pose_trail.pop_front();
+            }
+        }
+    }
+
+    /// Pose trail for field rendering (may be empty).
+    pub fn pose_trail(&self) -> &VecDeque<(f64, f64, u64)> {
+        &self.pose_trail
     }
 
     /// Publish rate in Hz over the last 2s. None if never updated.
@@ -214,6 +267,12 @@ impl Store {
 
     pub fn apply_value(&mut self, name: &str, v: NtValue, server_ts: u64, now: Instant) {
         self.ensure(name).apply(v, server_ts, now);
+    }
+
+    /// Pose trail samples for `name` (None if the topic was never seen or
+    /// never classified as a pose).
+    pub fn pose_trail(&self, name: &str) -> Option<&VecDeque<(f64, f64, u64)>> {
+        self.topics.get(name).map(|t| t.pose_trail())
     }
 
     pub fn sorted_names(&self) -> Vec<String> {

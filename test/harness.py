@@ -655,6 +655,71 @@ def main():
         time.sleep(0.2)
     check("T25c ssh failure surfaced", found, tui.text()[-600:])
 
+    # T26: field visualization (pose cards, conservative detection, manual
+    # alliance flip) -----------------------------------------------------------
+    braille = lambda s: any("\u2800" <= ch <= "\u28ff" for ch in s)
+
+    # T26a: pin the exact-name pose topic -> braille field card appears.
+    tui.send("/"); tui.pump(0.2)
+    tui.send("botpose_wpiblue"); tui.pump(0.2)
+    tui.send(" "); tui.pump(0.1)
+    tui.send("\x1b"); tui.pump(0.5)
+    txt = tui.text()
+    check("T26a field card renders for botpose_wpiblue",
+          "botpose_wpiblue" in txt and braille(txt), txt[-800:])
+
+    # T26b: pin the lookalike -> stays a normal array card, no field render.
+    tui.send("/"); tui.pump(0.2)
+    tui.send("targetpose"); tui.pump(0.2)
+    tui.send(" "); tui.pump(0.1)
+    tui.send("\x1b"); tui.pump(0.5)
+    txt = tui.text()
+    check("T26b lookalike targetpose stays a value card", "[1.000," in txt, txt[-800:])
+
+    # T26c: manual opt-in flips the lookalike to a field card (palette).
+    # Focus is state-dependent here: ESC forces Tree (no-op from Tree),
+    # TAB then guarantees Watchlist. Cards: [Battery, botpose, targetpose];
+    # cursor 0, so j twice lands on targetpose.
+    tui.send("\x1b"); tui.pump(0.2)  # force Tree focus
+    tui.send("\t"); tui.pump(0.2)   # -> Watchlist, cursor 0
+    tui.send("j"); tui.pump(0.2)
+    tui.send("j"); tui.pump(0.2)    # down to the targetpose card
+    tui.send(":"); tui.pump(0.2)
+    tui.send("toggle"); tui.pump(0.2)   # send words separately: multi-word
+    tui.send("pose"); tui.pump(0.3)     # strings are filtered by send()
+    tui.send("\r"); tui.pump(0.5)
+    txt = tui.text()
+    check("T26c palette toggles pose view on active card",
+          "[SUCCESS] field card: SmartDashboard/targetpose" in txt, txt[-800:])
+    check("T26d forced lookalike now renders as field card",
+          "[1.000," not in txt and braille(txt), txt[-800:])
+
+    # T26e: alliance flip is USER-ONLY, via palette, and mirrored rendering
+    # (toast proves the command ran; the mirror itself is a pure function of
+    # config.field.alliance exercised in src/field.rs + render path).
+    tui.send(":"); tui.pump(0.2)
+    tui.send("set"); tui.pump(0.2)
+    tui.send("alliance"); tui.pump(0.2)
+    tui.send("red"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.5)
+    check("T26e alliance red command confirms (user-driven only)",
+          "field: red origin" in tui.text(), tui.text()[-600:])
+
+    # restore state: un-force the lookalike, set alliance back to blue.
+    tui.send(":"); tui.pump(0.2)
+    tui.send("toggle"); tui.pump(0.2)
+    tui.send("pose"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)
+    tui.send(":"); tui.pump(0.2)
+    tui.send("set"); tui.pump(0.2)
+    tui.send("alliance"); tui.pump(0.2)
+    tui.send("blue"); tui.pump(0.3)
+    tui.send("\r"); tui.pump(0.4)
+    # dismiss the two pose cards; cursor sits on targetpose. x removes it
+    # (cursor clamps to botpose), a second x removes botpose. Battery stays.
+    tui.send("x"); tui.pump(0.2)
+    tui.send("x"); tui.pump(0.3)
+
     # T14: quit ---------------------------------------------------------------------
     tui.send("q")
     # Poll for exit: a just-spawned ssh child can hold the stdout pipe for a

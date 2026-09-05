@@ -1,6 +1,8 @@
 mod app;
 mod config;
+mod field;
 mod nt;
+mod pose;
 mod ui;
 
 use nt::{channel, command_channel, run_client, NtUpdate};
@@ -259,7 +261,7 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         let now = Instant::now();
                         app.apply_values(batch, now);
                     }
-                    NtUpdate::TopicMeta { name, id, data_type, persistent, retained } => {
+                    NtUpdate::TopicMeta { name, id, data_type, persistent, retained, type_str, struct_schema } => {
                         let t = app.store.ensure(&name);
                         if id != u64::MAX {
                             t.id = id;
@@ -272,6 +274,12 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         }
                         if let Some(r) = retained {
                             t.retained = r;
+                        }
+                        if type_str.is_some() {
+                            t.type_str = type_str;
+                        }
+                        if struct_schema.is_some() {
+                            t.struct_schema = struct_schema;
                         }
                     }
                     NtUpdate::TopicRemoved(name) => {
