@@ -919,17 +919,49 @@ fn render_field_card(
     let base_l = (robot.0 - 0.25 * hdx - 0.3 * hdy, robot.1 - 0.25 * hdy + 0.3 * hdx);
     let base_r = (robot.0 - 0.25 * hdx + 0.3 * hdy, robot.1 - 0.25 * hdy - 0.3 * hdx);
 
-    // Inflate the drawable extents slightly: wall rects often extend a
-    // few cm past the nominal field size, and Canvas drops line segments
-    // whose endpoints land outside the grid (the perimeter would vanish).
-    let draw_len = length * 1.05;
-    let draw_wid = app.field_map.width_m * 1.05;
-    let ((bx0, bx1), (by0, by1)) = crate::field::fit_bounds(
+    // Bounds must contain EVERY wall endpoint: Canvas drops a segment if
+    // either endpoint is outside the grid (walls can overshoot the nominal
+    // field in any direction — e.g. a wall rect at x = -0.025). Fit the
+    // union bbox of walls + marks, padded, aspect-preserved.
+    let mut ux0 = f64::MAX;
+    let mut uy0 = f64::MAX;
+    let mut ux1 = f64::MIN;
+    let mut uy1 = f64::MIN;
+    for poly in app.field_map.walls.iter().chain(app.field_map.marks.iter()) {
+        for (x, y) in poly {
+            ux0 = ux0.min(*x);
+            uy0 = uy0.min(*y);
+            ux1 = ux1.max(*x);
+            uy1 = uy1.max(*y);
+        }
+    }
+    if ux0 > ux1 || uy0 > uy1 {
+        // Empty map: fall back to the field extents.
+        ux0 = 0.0;
+        uy0 = 0.0;
+        ux1 = length;
+        uy1 = app.field_map.width_m;
+    }
+    let pad_x = (ux1 - ux0).max(1.0) * 0.02;
+    let pad_y = (uy1 - uy0).max(1.0) * 0.02;
+    ux0 -= pad_x;
+    uy0 -= pad_y;
+    ux1 += pad_x;
+    uy1 += pad_y;
+    let (ucx, ucy) = ((ux0 + ux1) / 2.0, (uy0 + uy1) / 2.0);
+    let ((mut bx0, mut bx1), (mut by0, mut by1)) = crate::field::fit_bounds(
         canvas_area.width as usize,
         canvas_area.height as usize,
-        draw_len,
-        draw_wid,
+        ux1 - ux0,
+        uy1 - uy0,
     );
+    // fit_bounds centers on its own extents; shift to the union's center.
+    let sx = ucx - (bx0 + bx1) / 2.0;
+    let sy = ucy - (by0 + by1) / 2.0;
+    bx0 += sx;
+    bx1 += sx;
+    by0 += sy;
+    by1 += sy;
     let canvas = Canvas::default()
         .x_bounds([bx0, bx1])
         .y_bounds([by0, by1])

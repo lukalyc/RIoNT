@@ -9,7 +9,7 @@ full-height Watchlist Canvas** that auto-packs pinned topics into a
 responsive, type-aware card matrix — under a Driver-Station style HUD.
 
 ```
- RIONT v0.3.1     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+ RIONT v0.3.2     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
 ┌ TOPIC TREE (35% W, 70% H) ┐┌ WATCHLIST CANVAS (65% W, 100% H) ─────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │
