@@ -919,11 +919,16 @@ fn render_field_card(
     let base_l = (robot.0 - 0.25 * hdx - 0.3 * hdy, robot.1 - 0.25 * hdy + 0.3 * hdx);
     let base_r = (robot.0 - 0.25 * hdx + 0.3 * hdy, robot.1 - 0.25 * hdy - 0.3 * hdx);
 
+    // Inflate the drawable extents slightly: wall rects often extend a
+    // few cm past the nominal field size, and Canvas drops line segments
+    // whose endpoints land outside the grid (the perimeter would vanish).
+    let draw_len = length * 1.05;
+    let draw_wid = app.field_map.width_m * 1.05;
     let ((bx0, bx1), (by0, by1)) = crate::field::fit_bounds(
         canvas_area.width as usize,
         canvas_area.height as usize,
-        length,
-        app.field_map.width_m,
+        draw_len,
+        draw_wid,
     );
     let canvas = Canvas::default()
         .x_bounds([bx0, bx1])
@@ -968,15 +973,9 @@ fn render_field_card(
                     });
                 }
             }
-            // Alliance side labels — anchored per half, so the USER-SET x
-            // mirror moves them with their side (never auto-inferred).
-            let label_y = app.field_map.width_m / 2.0;
-            ctx.print(fx(0.6), label_y, Span::styled("BLUE", Style::default().fg(ROBOT_BLUE)));
-            ctx.print(
-                fx(length - 3.4),
-                label_y,
-                Span::styled("RED", Style::default().fg(ROBOT_RED)),
-            );
+            // Alliance halves are tinted by wall color (blue left, red
+            // right in the blue-origin frame); no text labels — the user-
+            // SET x mirror moves the colors, which is indication enough.
             ctx.layer(); // robot layer paints over the walls
             if !trail.is_empty() {
                 ctx.draw(&Points { coords: &trail, color: MUTED });

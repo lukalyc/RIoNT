@@ -1,7 +1,7 @@
 [package]
 name = "riont"
 description = "RIONT — Robot Inspection Over Network Tables (keyboard-only NT4 dashboard for FRC)"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 
 [dependencies]
