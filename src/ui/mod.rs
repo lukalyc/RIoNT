@@ -147,49 +147,43 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(true);
     let amber_style = Style::default().fg(AMBER).add_modifier(Modifier::BOLD);
 
-    // The client already knows WHY the link dropped — surface the reason
-    // and the retry count instead of blinking amber forever with no
-    // diagnosis. State strings are left-ellipsized to the comm budget so
-    // the diagnostic tail (the actionable part) survives narrow terminals.
-    let reason = app.disconnect_reason.clone().unwrap_or_default();
-    let comm_budget = (area.width as usize).saturating_sub(75).clamp(20, 48);
+    // The client already knows WHY the link dropped — surface a SHORT,
+    // humanized cause (raw OS error strings like "No connection could be
+    // made because the target machine actively refused it. (os error
+    // 10061)" are unreadable at HUD scale) plus the retry count.
+    let reason = short_reason(&app.disconnect_reason.clone().unwrap_or_default());
     let comm = if app.connected {
         Span::styled(
             format!("ONLINE ({})", ip),
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )
     } else if app.retry_attempt > 0 {
-        // Retry loop: attempt count plus the last failure reason. The state
-        // keyword is rendered WHOLE — ellipsizing the full label could drop
-        // "RECONNECTING" itself on long Windows error strings — and only
-        // the reason is left-ellipsized into the remaining budget (the
-        // actionable tail of long reasons survives).
-        let kw = format!("RECONNECTING (attempt {})", app.retry_attempt);
-        let label = if reason.is_empty() {
-            kw
-        } else {
-            let rem = comm_budget.saturating_sub(kw.chars().count() + 1);
-            format!("{} {}", kw, ellipsize_left(&reason, rem))
-        };
+        // Retry loop: keyword whole (never ellipsized), attempt count and
+        // short cause quiet and dim — glanceable, not shouty.
         if blink_on {
-            Span::styled(label, amber_style)
+            Span::styled("RECONNECTING", amber_style)
         } else {
-            dim(label)
+            dim("RECONNECTING")
         }
     } else if !reason.is_empty() {
         // Just dropped, retry counter not yet ticking: the red state the
         // README promises, finally reachable — and carrying the cause.
-        // Same keyword-first rule as above: "DISCONNECTED" never ellipsized.
-        let rem = comm_budget.saturating_sub("DISCONNECTED".chars().count() + 3);
-        Span::styled(
-            format!("DISCONNECTED — {}", ellipsize_left(&reason, rem)),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )
+        Span::styled("DISCONNECTED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
     } else if app.connecting {
         // First connect: no reason yet, no attempt — plain amber.
         Span::styled("RECONNECTING...", amber_style)
     } else {
         Span::styled("DISCONNECTED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+    };
+    // Attempt count + humanized reason ride along dim, after the keyword.
+    let comm = if !app.connected && !reason.is_empty() {
+        let detail = match (app.connected, app.retry_attempt) {
+            (_, 0) => format!(" — {}", reason),
+            (_, n) => format!(" (attempt {} — {})", n, reason),
+        };
+        vec![comm, dim(ellipsize_left(&detail, (area.width as usize).saturating_sub(60).clamp(12, 40)))]
+    } else {
+        vec![comm]
     };
 
     let code = match app.code_running() {
@@ -218,12 +212,14 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         None => "--:--:--".into(),
     };
 
-    let line = Line::from(vec![
+    let mut line = vec![
         // Single source of truth: Cargo.toml's `version`, baked in at
         // compile time. Never hardcode a version string here.
         bold(format!("RIONT v{}", env!("CARGO_PKG_VERSION"))),
         dim("  [COMM: "),
-        comm,
+    ];
+    line.extend(comm);
+    line.extend([
         dim("]"),
         dim("  [CODE: "),
         code,
@@ -233,11 +229,45 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         dim("]"),
         dim(format!("  {} topics", app.store.topics.len())),
     ]);
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
 fn fmt_hms(total_secs: u64) -> String {
     format!("{:02}:{:02}:{:02}", total_secs / 3600, (total_secs / 60) % 60, total_secs % 60)
+}
+
+/// Humanize a raw disconnect reason into a short HUD label. The full
+/// error string still goes to toasts; the HUD only has room for the
+/// diagnosis. Known Windows/ntcore failure modes map to their names —
+/// anything unrecognized stays "connection failed" rather than leaking
+/// a half-ellipsized OS message onto the HUD.
+fn short_reason(reason: &str) -> String {
+    if reason.is_empty() {
+        return String::new();
+    }
+    let r = reason.to_lowercase();
+    let label = if r.contains("10061") || r.contains("refused") {
+        "connection refused"
+    } else if r.contains("10060") || r.contains("timed out") || r.contains("timeout") {
+        "timed out"
+    } else if r.contains("10065") || r.contains("unreachable") {
+        "host unreachable"
+    } else if r.contains("10054") || r.contains("reset") {
+        "connection reset"
+    } else if r.contains("10051") || r.contains("network down") || r.contains("unreachable network") {
+        "network down"
+    } else if r.contains("10049") || r.contains("not valid") && r.contains("address") {
+        "bad address"
+    } else if r.contains("resolve") || r.contains("name or service") || r.contains("dns") {
+        "dns lookup failed"
+    } else if r.contains("no route") {
+        "no route to host"
+    } else if r.contains("rejected") || r.contains("handshake") || r.contains("subprotocol") {
+        "handshake failed"
+    } else {
+        "connection failed"
+    };
+    label.to_string()
 }
 
 /// Humanized Δ since last change: `20ms`, `14.2s`, `3.4m`, `1.2h`.
@@ -1605,5 +1635,30 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         y: area.y + (area.height - h) / 2,
         width: w,
         height: h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_reason;
+
+    #[test]
+    fn short_reason_maps_common_failures() {
+        // Real Windows error text (the exact string from the bug report).
+        assert_eq!(
+            short_reason(
+                "connect: No connection could be made because the target machine actively refused it. (os error 10061)"
+            ),
+            "connection refused"
+        );
+        assert_eq!(short_reason("connect timeout"), "timed out");
+        assert_eq!(
+            short_reason(
+                "connect: The remote computer refused the network connection. (os error 1225)"
+            ),
+            "connection refused"
+        );
+        assert_eq!(short_reason("write publish"), "connection failed");
+        assert_eq!(short_reason(""), "");
     }
 }
