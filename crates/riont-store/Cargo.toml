@@ -1,0 +1,6 @@
+[package]
+name = "riont-store"
+description = "In-memory NetworkTables topic store: values, metadata, rate windowing, pose classification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

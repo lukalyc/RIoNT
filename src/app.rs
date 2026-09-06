@@ -1,11 +1,11 @@
 //! Application state + vim-style input handling. Pure logic, no rendering.
 
 use crate::config::SavedTarget;
-use crate::nt::store::{NtType, NtValue, Store};
-use crate::nt::ClientCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use riont_nt4::ClientCommand;
+use riont_store::store::{NtType, NtValue, Store};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +137,13 @@ pub enum UiAction {
     Quit,
     None,
     Client(ClientCommand),
+    /// Dispatch a background SSH restart of the robot code (product-side
+    /// operation; runs in the binary, not the nt4 engine crate).
+    RestartRobotCode {
+        host: String,
+        user: String,
+        cmd: String,
+    },
     /// Suspend the TUI, open the file in $EDITOR, then resume.
     OpenEditor(std::path::PathBuf),
 }
@@ -966,7 +973,7 @@ impl App {
     /// The topic's current pose reading, if the current value classifies.
     /// None between estimates (empty arrays etc.) — the field card then
     /// renders WITHOUT the robot marker instead of disappearing.
-    pub fn field_reading(&self, topic: &str) -> Option<crate::pose::PoseReading> {
+    pub fn field_reading(&self, topic: &str) -> Option<riont_store::pose::PoseReading> {
         let td = self.store.topics.get(topic)?;
         let v = td.current.as_ref()?;
         let forced = self
@@ -975,7 +982,7 @@ impl App {
             .force_pose_topics
             .iter()
             .any(|t| t == topic);
-        let auto = crate::pose::classify(topic, td.type_str.as_deref(), v);
+        let auto = riont_store::pose::classify(topic, td.type_str.as_deref(), v);
         // Forced only widens for topics the user explicitly opted in.
         if forced {
             auto.or_else(|| crate::field::forced_reading(v))
@@ -1339,11 +1346,11 @@ impl App {
                     ToastKind::Info,
                     format!("restart: ssh {}@{}...", user, host),
                 );
-                UiAction::Client(ClientCommand::RestartRobotCode {
+                UiAction::RestartRobotCode {
                     host,
                     user,
                     cmd: restart,
-                })
+                }
             }
         }
     }
@@ -1772,7 +1779,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 /// target, mirroring the CLI argument handling in main.
 pub fn resolve_target(input: &str) -> String {
     let input = input.trim();
-    let port = crate::nt::client::NT_PORT;
+    let port = riont_nt4::NT_PORT;
     // Team number -> 10.TE.AM.2 (valid for team < 10000).
     if let Ok(team) = input.parse::<u32>() {
         if team < 100 {
@@ -1792,7 +1799,7 @@ pub fn resolve_target(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nt::store::NtValue;
+    use riont_store::store::NtValue;
 
     #[test]
     fn overlay_group_collapses_cells_and_expands_members() {

@@ -1,14 +1,21 @@
-//! Async NT4 client task.
+//! Async NT4 client task: the wire protocol engine.
 //!
 //! NT4 over WebSocket (port 5810, subprotocol "networktables.first.wpi.edu"):
 //! - Text frames: JSON control messages `{"method":..,"params":..}`
 //! - Binary frames: MessagePack 4-tuples `[topicId|pubuid, timestamp_us, type, value]`
 //!
-//! The UI talks to this task exclusively through the `NtUpdate` /
-//! `ClientCommand` channels, so the render loop never blocks on the network.
+//! A reconnect-forever session loop: subscribe-all with fast periodic,
+//! clock sync via the `-1` timestamp echo, publishes with automatic
+//! retransmission of the first value frame, connect-phase command
+//! servicing (a Retarget typed while connecting must never queue).
+//!
+//! Consumers talk to this task exclusively through the `NtUpdate` /
+//! `ClientCommand` channels, so their UI never blocks on the network.
+//! Product-specific side jobs (SSH restarts, anything beyond the NT4
+//! contract) live in the consuming application, NOT here.
 
-use crate::nt::store::{NtType, NtValue};
 use futures_util::{SinkExt, StreamExt};
+use riont_store::store::{NtType, NtValue};
 use rmpv::encode::write_value;
 use rmpv::Value as Mv;
 use serde_json::json;
@@ -66,11 +73,6 @@ pub enum NtUpdate {
     },
     /// Topic deleted on the server.
     TopicRemoved(String),
-    /// Background job result from the client task (e.g. SSH restart).
-    Toast {
-        kind: crate::app::ToastKind,
-        msg: String,
-    },
     // The client measures these for clock-synced publishes; the current
     // driver-station HUD intentionally does not surface raw rtt/offset.
     #[allow(dead_code)]
@@ -90,12 +92,6 @@ pub enum ClientCommand {
     Reconnect,
     /// Drop the socket and connect to a different target instead.
     Retarget(String),
-    /// Dispatch a background SSH command that restarts the robot code.
-    RestartRobotCode {
-        host: String,
-        user: String,
-        cmd: String,
-    },
 }
 
 pub fn channel() -> (UnboundedSender<NtUpdate>, UnboundedReceiver<NtUpdate>) {
@@ -115,65 +111,6 @@ fn local_us() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_micros() as u64
-}
-
-/// Fire-and-forget SSH restart of the robot user code. Runs entirely in a
-/// background task; the outcome lands back in the UI as a toast. Never
-/// touches NetworkTables — the command comes straight from config.json
-/// (`system.ssh_user` + `system.restart_cmd`).
-fn spawn_restart(updates: &UnboundedSender<NtUpdate>, host: String, user: String, cmd: String) {
-    let updates = updates.clone();
-    tokio::spawn(async move {
-        let started = Instant::now();
-        let output = tokio::process::Command::new("ssh")
-            // tokio's output() leaves stdin INHERITED (unlike std), which
-            // would hand the TUI's keystroke pipe to ssh and hang it.
-            .stdin(std::process::Stdio::null())
-            .arg("-o")
-            .arg("ConnectTimeout=5")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg(format!("{}@{}", user, host))
-            .arg(&cmd)
-            .output()
-            .await;
-        let elapsed = started.elapsed().as_secs_f32();
-        match output {
-            Ok(out) if out.status.success() => {
-                updates
-                    .send(NtUpdate::Toast {
-                        kind: crate::app::ToastKind::Success,
-                        msg: format!("robot code restarted in {:.2}s", elapsed),
-                    })
-                    .ok();
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let detail = stderr
-                    .lines()
-                    .last()
-                    .unwrap_or("ssh failed")
-                    .trim()
-                    .to_string();
-                updates
-                    .send(NtUpdate::Toast {
-                        kind: crate::app::ToastKind::Error,
-                        msg: format!("restart failed: {}", detail),
-                    })
-                    .ok();
-            }
-            Err(e) => {
-                updates
-                    .send(NtUpdate::Toast {
-                        kind: crate::app::ToastKind::Error,
-                        msg: format!("restart: ssh unavailable ({})", e),
-                    })
-                    .ok();
-            }
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +196,6 @@ pub async fn run_client(
         // state stays up.
         if reason != "retarget"
             && reason != "reconnect requested"
-            && reason != "restart during connect"
             && last_reason.as_deref() != Some(reason.as_str())
         {
             updates.send(NtUpdate::Disconnected(reason.clone())).ok();
@@ -273,11 +209,6 @@ pub async fn run_client(
             Some(cmd) = commands.recv() => match cmd {
                 ClientCommand::Reconnect => {}
                 ClientCommand::Retarget(t) => *retarget_to.lock().unwrap() = Some(t),
-                // Restart works even while disconnected (SSH does not need
-                // the NT link).
-                ClientCommand::RestartRobotCode { host, user, cmd } => {
-                    spawn_restart(&updates, host, user, cmd);
-                }
                 // A publish that lands in the backoff window must not be
                 // lost: re-queue it for the next session.
                 pub_cmd @ ClientCommand::Publish { .. } => {
@@ -336,12 +267,6 @@ async fn session(
             ClientCommand::Retarget(t) => {
                 *retarget_to.lock().unwrap() = Some(t);
                 return Err("retarget".into());
-            }
-            // SSH restart does not need the NT link: fire it. Aborting the
-            // in-flight handshake is fine — the outer loop reconnects.
-            ClientCommand::RestartRobotCode { host, user, cmd } => {
-                spawn_restart(updates, host, user, cmd);
-                return Err("restart during connect".into());
             }
             pub_cmd @ ClientCommand::Publish { .. } => {
                 commands_tx.send(pub_cmd).ok();
@@ -480,10 +405,7 @@ async fn session(
                         *retarget_to.lock().unwrap() = Some(t);
                         break "retarget".into();
                     }
-                    ClientCommand::RestartRobotCode { host, user, cmd } => {
-                        spawn_restart(updates, host, user, cmd);
-                    }
-                    ClientCommand::Publish { topic, value } => {
+                            ClientCommand::Publish { topic, value } => {
                         // Wire-format topic names are absolute.
                         let wire_topic = if topic.starts_with('/') {
                             topic.clone()
@@ -595,7 +517,7 @@ fn handle_text(
                     .send(NtUpdate::TopicMeta {
                         name,
                         id,
-                        data_type: Some(NtType::from_str(type_str)),
+                        data_type: Some(NtType::parse(type_str)),
                         persistent: props.get("persistent").and_then(|v| v.as_bool()),
                         retained: props.get("retained").and_then(|v| v.as_bool()),
                         type_str: if type_str.is_empty() {

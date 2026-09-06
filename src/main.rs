@@ -1,14 +1,14 @@
 mod app;
 mod config;
+// `field` is the product-side facade over the riont-field engine crate.
 mod field;
-mod nt;
-mod pose;
+mod ops;
 mod ui;
 
 #[cfg(test)]
 mod tests_tui;
 
-use nt::{channel, command_channel, run_client, NtUpdate};
+use riont_nt4::{channel, command_channel, run_client, NtUpdate};
 
 use app::{App, UiAction};
 use crossterm::{
@@ -79,6 +79,9 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
     let target = target.to_string();
     let (update_tx, mut update_rx) = channel();
     let (cmd_tx, cmd_rx) = command_channel();
+    // Background product operations (SSH restart) report back as toasts.
+    let (toast_tx, mut toast_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(app::ToastKind, String)>();
     let handle = tokio::spawn(run_client(
         target.clone(),
         update_tx,
@@ -222,6 +225,9 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                         UiAction::Client(cmd) => {
                             cmd_tx.send(cmd).ok();
                         }
+                        UiAction::RestartRobotCode { host, user, cmd } => {
+                            ops::spawn_restart(toast_tx.clone(), host, user, cmd);
+                        }
                         UiAction::OpenEditor(path) => {
                             match run_editor(&path, &mut terminal, headless) {
                                 Err(e) => {
@@ -308,12 +314,15 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     NtUpdate::TopicRemoved(name) => {
                         app.store.topics.remove(&name);
                     }
-                    NtUpdate::Toast { kind, msg } => app.toast(kind, msg),
                     // Per-topic RTT/clock measurements stay inside the client
                     // (needed for clock-synced publishes); the HUD is
                     // driver-station style and does not surface them.
                     NtUpdate::Rtt(_) | NtUpdate::ClockOffset(_) => {}
                 }
+            }
+            // background product operations (SSH restart) reporting toasts
+            Some((kind, msg)) = toast_rx.recv() => {
+                app.toast(kind, msg);
             }
             // tick
             _ = tick.tick() => {

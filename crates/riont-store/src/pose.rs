@@ -6,7 +6,7 @@
 //! arrays) stay ordinary topics — a false positive would draw a phantom
 //! robot on the field, so there is no fuzzy matching, ever.
 
-use crate::nt::store::NtValue;
+use crate::store::NtValue;
 
 /// Where a pose reading came from (drives later rendering decisions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

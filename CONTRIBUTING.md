@@ -15,14 +15,22 @@ target/release/riont 9986
 
 ## Code layout
 
+RIONT is a Cargo workspace: the product binary plus reusable engine crates
+(also consumed by other applications via git-tag dependencies — see
+"Reusing the engine" below).
+
 ```
+crates/riont-nt4/    Async NT4 client task: reconnect-forever sessions, clock sync,
+                     publish retransmission. NtUpdate / ClientCommand channels.
+                     Product-agnostic — no app logic, no SSH.
+crates/riont-store/  Topic store: values, metadata, Hz windowing, pose trails;
+                     conservative pose classification + struct:Pose2d decoding.
+crates/riont-field/  Field geometry: built-in + PathPlanner JSON maps, wall
+                     classification, braille-card math.
 src/main.rs          CLI (team/IP resolve), terminal setup, editor suspend/resume
 src/app.rs           App state, key handling, palette/toasts. Pure logic, no rendering.
 src/config.rs        ~/.config/riont/config.json: targets, presets, SSH settings.
-src/nt/client.rs     Async NT4 task + background SSH restart. Owns the socket, never blocks the UI.
-src/nt/store.rs      Topic store: values, metadata, Hz windowing, pose trails.
-src/pose.rs          Conservative pose classification + struct:Pose2d decoding.
-src/field.rs         Field maps (built-ins + PathPlanner JSON loader) + card math.
+src/ops.rs           Product-side background ops (SSH robot-code restart).
 src/ui/mod.rs        Layout: HUD, tree, inspector dock, watchlist card matrix, overlays.
 src/ui/tree.rs       Collapsible topic tree model (rebuilt per frame).
 scripts/             release.sh, screenshot.py, fetch_field.py (season maps)
@@ -33,10 +41,10 @@ The WebSocket client identifies itself as `riont` (connect path
 `/nt/riont`).
 
 Threading model: the UI thread only renders and handles keys. All socket
-IO lives in the client task and reaches the UI through unbounded MPSC
-channels (`NtUpdate` downstream, `ClientCommand` upstream), batched at
-50 ms. The render loop ticks at ~120 Hz, but ratatui's diffing means only
-changed cells hit the terminal.
+IO lives in the `riont-nt4` client task and reaches the UI through
+unbounded MPSC channels (`NtUpdate` downstream, `ClientCommand` upstream),
+batched at 50 ms. The render loop ticks at ~120 Hz, but ratatui's diffing
+means only changed cells hit the terminal.
 
 Per-topic telemetry: publish rate (Hz, 2 s sliding window) and Δ since
 last change. The client measures RTT/clock offset internally — used only
@@ -95,6 +103,23 @@ a pre-seeded watchlist and renders the captured screens to
 ```
 conda run -n nt-tui-test python scripts/screenshot.py
 ```
+
+## Reusing the engine
+
+The engine crates are MIT-licensed and product-agnostic. An application in
+another repository (e.g. a team-private tool) can depend on them by git
+tag — the public repo needs no auth:
+
+```toml
+[dependencies]
+riont-nt4    = { git = "https://github.com/lukalyc/riont.git", tag = "v0.6.0" }
+riont-store  = { git = "https://github.com/lukalyc/riont.git", tag = "v0.6.0" }
+riont-field  = { git = "https://github.com/lukalyc/riont.git", tag = "v0.6.0" }
+```
+
+Pin to release tags (never track `master`), and bump deliberately — the
+engine's semver signals breaking changes. Crates stay in lockstep with the
+repo version; `scripts/release.sh` bumps them together.
 
 ## Releases
 

@@ -10,6 +10,13 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Added
 
+- **Engine crates**: RIONT restructured as a Cargo workspace —
+  `riont-nt4` (NT4 protocol client), `riont-store` (topic store + pose
+  classification) and `riont-field` (field maps + geometry) are now
+  reusable, product-agnostic crates. The SSH robot-code restart moved out
+  of the client into the app (`src/ops.rs`). Other projects can depend on
+  the engine by git tag (see CONTRIBUTING.md).
+- MIT `LICENSE` (matching the licensing of other common FRC tools).
 - Screenshots in the README (connected session, enlarged field view,
   command palette), with `scripts/screenshot.py` to regenerate them;
   `CONTRIBUTING.md` now holds the build/architecture/protocol/testing

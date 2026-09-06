@@ -22,10 +22,10 @@
 //! touched.
 
 use crate::app::{App, MatrixSource, Mode, UiAction};
-use crate::nt::store::NtValue;
-use crate::nt::ClientCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
+use riont_nt4::ClientCommand;
+use riont_store::store::NtValue;
 
 /// Redirect THIS test thread's `Config::path()` to a private scratch dir.
 /// Thread-local (see `Config::set_test_path`): parallel test threads never

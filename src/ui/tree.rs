@@ -1,6 +1,6 @@
 //! Builds the collapsible topic tree from the store.
 
-use crate::nt::store::Store;
+use riont_store::store::Store;
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone)]

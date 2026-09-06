@@ -560,8 +560,8 @@ fn short_name(path: &str, width: usize) -> String {
 
 /// Type-aware value spans for a card's primary row. Strings get strict
 /// single-line ellipsis truncation; arrays wrap onto a second sub-row.
-fn value_lines(v: &crate::nt::store::NtValue, width: usize) -> Vec<Line<'static>> {
-    use crate::nt::store::NtValue as V;
+fn value_lines(v: &riont_store::store::NtValue, width: usize) -> Vec<Line<'static>> {
+    use riont_store::store::NtValue as V;
     let w = width.saturating_sub(2).max(2);
     match v {
         V::Boolean(b) => {
@@ -683,8 +683,8 @@ fn ellipsize(s: &str, width: usize) -> String {
     }
 }
 
-fn array_elements(v: &crate::nt::store::NtValue) -> Vec<String> {
-    use crate::nt::store::NtValue as V;
+fn array_elements(v: &riont_store::store::NtValue) -> Vec<String> {
+    use riont_store::store::NtValue as V;
     match v {
         V::BooleanArray(a) => a.iter().map(|b| b.to_string()).collect(),
         V::DoubleArray(a) => a.iter().map(|f| format!("{:.3}", f)).collect(),
@@ -705,7 +705,7 @@ fn card_total_height(app: &App, topic: &str, width: usize) -> u16 {
     }
     let vlines = match app.store.topics.get(topic).and_then(|t| t.current.as_ref()) {
         Some(v) => {
-            use crate::nt::store::NtValue as V;
+            use riont_store::store::NtValue as V;
             match v {
                 V::BooleanArray(_) | V::DoubleArray(_) | V::IntArray(_) | V::StringArray(_) => {
                     value_lines(v, width.saturating_sub(2)).len()
@@ -925,7 +925,7 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
 /// A topic drawn on a field card: identity color, live reading.
 struct FieldMember {
     topic: String,
-    reading: Option<crate::pose::PoseReading>,
+    reading: Option<riont_store::pose::PoseReading>,
     color: Color,
     trail: Color,
 }

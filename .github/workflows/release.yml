@@ -48,7 +48,7 @@ jobs:
           STAGE="stage/riont-$VERSION"
           mkdir -p "$STAGE" dist
           cp "target/$TARGET/release/riont$EXT" "$STAGE/"
-          cp README.md CHANGELOG.md "$STAGE/"
+          cp README.md CHANGELOG.md LICENSE "$STAGE/"
           if [[ "$TARGET" == *windows* ]]; then
             # bsdtar on the Windows runner: -a infers zip from the name.
             tar -a -c -f "dist/riont-$VERSION-$TARGET.zip" -C stage "riont-$VERSION"

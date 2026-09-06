@@ -1,16 +1,30 @@
+[workspace]
+members = [
+    "crates/riont-nt4",
+    "crates/riont-store",
+    "crates/riont-field",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.6.0"
+edition = "2021"
+license = "MIT"
+
 [package]
 name = "riont"
 description = "RIONT — Robot Inspection Over Network Tables (keyboard-only NT4 dashboard for FRC)"
-version = "0.6.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
+riont-nt4 = { path = "crates/riont-nt4" }
+riont-store = { path = "crates/riont-store" }
+riont-field = { path = "crates/riont-field" }
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util", "process"] }
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
-rmpv = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 fuzzy-matcher = "0.3"

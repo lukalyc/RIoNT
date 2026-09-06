@@ -22,7 +22,7 @@ pub enum NtType {
 }
 
 impl NtType {
-    pub fn from_str(s: &str) -> NtType {
+    pub fn parse(s: &str) -> NtType {
         match s {
             "boolean" => NtType::Boolean,
             "double" => NtType::Double,
@@ -220,7 +220,7 @@ impl TopicData {
         self.current = Some(v.clone());
         self.last_update = Some(now);
         self.last_server_ts = Some(server_ts);
-        self.data_type = match NtType::from_str(v.type_name()) {
+        self.data_type = match NtType::parse(v.type_name()) {
             NtType::Unknown => self.data_type,
             t => t,
         };

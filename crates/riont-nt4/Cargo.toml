@@ -1,0 +1,14 @@
+[package]
+name = "riont-nt4"
+description = "Async NT4 WebSocket client task: reconnect-forever sessions, clock sync, publish retransmission"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+riont-store = { path = "../riont-store" }
+futures-util = "0.3"
+rmpv = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio-tungstenite = "0.24"

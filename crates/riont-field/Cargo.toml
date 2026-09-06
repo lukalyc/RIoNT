@@ -1,0 +1,11 @@
+[package]
+name = "riont-field"
+description = "FRC field geometry for pose field cards: built-in + PathPlanner JSON maps, wall classification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+riont-store = { path = "../riont-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

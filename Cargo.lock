@@ -933,15 +933,40 @@ dependencies = [
  "arboard",
  "clap",
  "crossterm",
- "futures-util",
  "fuzzy-matcher",
  "ratatui",
- "rmpv",
+ "riont-field",
+ "riont-nt4",
+ "riont-store",
  "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "riont-field"
+version = "0.6.0"
+dependencies = [
+ "riont-store",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "riont-nt4"
+version = "0.6.0"
+dependencies = [
+ "futures-util",
+ "riont-store",
+ "rmpv",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
 ]
+
+[[package]]
+name = "riont-store"
+version = "0.6.0"
 
 [[package]]
 name = "rmp"
