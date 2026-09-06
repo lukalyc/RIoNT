@@ -8,6 +8,26 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Added
+
+- Screenshots in the README (connected session + enlarged field view),
+  with `scripts/screenshot.py` to regenerate them; `CONTRIBUTING.md`
+  now holds the build/architecture/protocol/testing details.
+
+### Changed
+
+- **2026-rebuilt is the default field map** (was 2025-reefscape). Cycle
+  order is unchanged: 2024 → 2025 → 2026 → wrap.
+- README restructured: features + keymap up front, screenshots as the
+  visual record, concise usage; build/testing/architecture details moved
+  to CONTRIBUTING.md.
+
+### Fixed
+
+- A minimal `config.json` (e.g. the README example) no longer fails to
+  parse: `field.length_m` / `width_m` now fall back to the season
+  defaults instead of invalidating the whole config.
+
 ## [0.6.0] - 2026-09-06
 
 ### Added

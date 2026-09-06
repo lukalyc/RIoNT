@@ -48,7 +48,9 @@ impl Default for SystemSettings {
 /// explicitly — the app never infers an alliance from topic names.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FieldSettings {
+    #[serde(default = "default_length_m")]
     pub length_m: f64,
+    #[serde(default = "default_width_m")]
     pub width_m: f64,
     pub alliance: String,
     /// Built-in field map name (see field::BUILTIN_MAPS). Cycled by the
@@ -73,8 +75,16 @@ pub struct FieldSettings {
     pub overlay_topics: Vec<String>,
 }
 
+fn default_length_m() -> f64 {
+    16.54
+}
+
+fn default_width_m() -> f64 {
+    8.21
+}
+
 fn default_map() -> String {
-    "2025-reefscape".into()
+    "2026-rebuilt".into()
 }
 
 impl Default for FieldSettings {
@@ -225,5 +235,34 @@ impl Config {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_field_geometry_uses_defaults() {
+        // Older/minimal configs (and the README example) omit length_m /
+        // width_m; the whole config must still parse, never fall back.
+        let cfg: Config =
+            serde_json::from_str(r#"{"last_target": "10.1.18.2", "field": {"alliance": "blue"}}"#)
+                .expect("minimal config must parse");
+        assert_eq!(cfg.field.length_m, 16.54);
+        assert_eq!(cfg.field.width_m, 8.21);
+        assert_eq!(cfg.last_target.as_deref(), Some("10.1.18.2"));
+    }
+
+    #[test]
+    fn default_field_map_is_2026_and_cycle_wraps() {
+        assert_eq!(default_map(), "2026-rebuilt");
+        // The palette's Cycle Map steps BUILTIN_MAPS in order and wraps —
+        // with 2026 as the default, one cycle must land on 2024.
+        let pos = crate::field::BUILTIN_MAPS
+            .iter()
+            .position(|n| *n == default_map())
+            .expect("default map must be a built-in");
+        assert_eq!(crate::field::BUILTIN_MAPS[(pos + 1) % 3], "2024-crescendo");
     }
 }

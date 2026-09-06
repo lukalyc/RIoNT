@@ -8,7 +8,7 @@
 //!   1. `config.field.walls_file` — external JSON (PathPlanner format),
 //!      THE path for new seasons: drop in the official file, no rebuild.
 //!   2. `config.field.map` — a built-in map name (see BUILTIN_MAPS).
-//!   3. The default built-in (`2025-reefscape`).
+//!   3. The default built-in (`2026-rebuilt`).
 //!
 //! BUILT-IN interior obstacles are APPROXIMATIONS (see each const). The
 //! perimeter is exact. Official geometry arrives via `scripts/fetch_field.py`

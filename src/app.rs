@@ -275,7 +275,7 @@ impl App {
             show_pose_trail: true,
             fms_red: None,
             field_view: None,
-            field_map: crate::field::FieldMap::builtin("2025-reefscape")
+            field_map: crate::field::FieldMap::builtin("2026-rebuilt")
                 .expect("default map is built in"),
             retry_attempt: 0,
         };
