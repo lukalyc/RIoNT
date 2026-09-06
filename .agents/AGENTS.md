@@ -9,6 +9,10 @@ A step-by-step walkthrough of this procedure is available as an agent
 skill: `.agents/skills/version-release/SKILL.md`. Use it; keep the two
 in sync (AGENTS.md wins on any disagreement).
 
+The product scope lives in `ROADMAP.md` — read its Mission and
+Non-goals sections before proposing or implementing any feature. If a
+feature idea is listed under Non-goals or Rejected, do not build it.
+
 **Every change that lands in a commit must carry a version bump in
 `Cargo.toml`.** The HUD reads the version at compile time
 (`env!("CARGO_PKG_VERSION")` in `src/ui/mod.rs`), so `Cargo.toml` is the
