@@ -74,9 +74,11 @@ season-tested reason:
 
 ### Infrastructure
 
-9. **CI + release binaries.** GitHub Actions building Windows/Linux/
-   macOS binaries on tag push, so teammates can run RIONT without a
-   Rust toolchain.
+9. **CI + release binaries.** ✅ **Done** — `.github/workflows/ci.yml`
+   (fmt/clippy/tests on Windows/Linux/macOS + the contract harness on
+   Linux) and `.github/workflows/release.yml` (Windows/Linux/macOS
+   binaries attached to the GitHub release on `v*` tag push, via
+   `scripts/release.sh`).
 10. **Wide-viewport harness coverage.** The 97-check suite currently
     tests at a 120x36 viewport only; a real rendering bug already
     escaped that way. Add wide/short layouts to the harness.

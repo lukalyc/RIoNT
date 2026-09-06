@@ -1,104 +1,86 @@
 ---
 name: version-release
-description: Step-by-step release procedure for RIONT — bump the version, update the changelog, sync the README, and verify. Use this skill whenever a change is about to be committed or committed work needs a version bump, whenever the user mentions releasing, bumping the version, updating the changelog, or cutting a release, and also proactively after finishing ANY code or doc change in this repo, even if the user didn't ask for version bookkeeping.
+description: Step-by-step release procedure for RIONT — cutting a versioned release (bump, changelog rotation, tag, CI binaries). Use this skill whenever the user mentions releasing, cutting a release, bumping the version, publishing binaries, or tagging; also proactively when a batch of Unreleased changelog work is ready to ship.
 ---
 
-# Version Release Procedure
+# Release Procedure
 
-Every change-carrying commit in RIONT ships a version bump, a changelog
-entry, and (when relevant) README sync — all in the **same commit**. The
-HUD renders the version from `Cargo.toml` at compile time
+RIONT versions **releases, not commits**. Work lands in `CHANGELOG.md`'s
+`## [Unreleased]` section; a release rotates that section into a version,
+tags it, and CI attaches binaries. `AGENTS.md` holds the policy; this
+skill is the walkthrough. The two must never disagree — if they do,
+AGENTS.md wins and this skill needs fixing.
+
+The HUD renders the version from `Cargo.toml` at compile time
 (`env!("CARGO_PKG_VERSION")`), so `Cargo.toml` is the single source of
 truth: never hardcode a version string in `src/`.
 
-Why this matters: RIONT is a pit tool. When someone reports a bug with a
-screenshot, the HUD version is the fastest way to know which binary they
-run. A stale version makes every report ambiguous. The changelog is the
-same promise in text form.
+## Step 0 — Preconditions
 
-`AGENTS.md` holds the policy; this skill is the walkthrough. The two
-must never disagree — if they do, AGENTS.md wins and this skill needs
-fixing.
+1. Working tree clean, on `master`, up to date with `origin/master`.
+2. `## [Unreleased]` in `CHANGELOG.md` is non-empty (a release with no
+   content is a mistake — the script rejects it).
+3. CI is green on the latest commit (`.github/workflows/ci.yml`).
 
-## Step 1 — Pick the bump level
+## Step 1 — Pick the bump level (or let the script do it)
 
-Read the diff (or recall what changed) and classify it:
+Read the Unreleased bullets and classify:
 
-| Change | Bump | Examples from this repo |
+| Unreleased content | Bump | Examples |
 | --- | --- | --- |
-| Behavior fix, small polish, docs/tests only | **PATCH** (0.5.1 → 0.5.2) | toast TTL fix, README cleanup |
-| New user-facing feature or capability | **MINOR** (0.5.0 → 0.6.0) | new keybinding, new card type, new palette command, new config keys |
+| Bug fixes, polish, docs, tests only | **PATCH** (0.5.4 → 0.5.5) | toast TTL fix, README cleanup |
+| New user-facing feature or capability | **MINOR** (0.5.0 → 0.6.0) | new palette command, new card type, new keybinding, new config keys, `RIONT_CONFIG` |
 | Breaking user-contract change | **MAJOR** (0.5.0 → 1.0.0) | keymap incompatibility, config format old versions can't read, removed commands |
 
 When torn between PATCH and MINOR, choose MINOR.
 
-## Step 2 — Bump `Cargo.toml`
+## Step 2 — Run the release script
 
-Change `version = "x.y.z"` under `[package]`. Nothing else in `src/`
-needs touching — the HUD picks it up at compile time.
+```
+scripts/release.sh <patch|minor|major|x.y.z> "one-line summary"
+# e.g.
+scripts/release.sh minor "test pyramid, RIONT_CONFIG, CI release binaries"
+```
 
-## Step 3 — Add the changelog entry
+The script (idempotent, safe to inspect before pushing):
 
-`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com):
-newest version at the TOP, dated today, with `### Added` /
-`### Changed` / `### Fixed` / `### Removed` subsections as applicable.
+1. Rotates `## [Unreleased]` → `## [X.Y.Z] - <today>` and inserts a fresh
+   empty `## [Unreleased]`.
+2. Bumps `Cargo.toml`, refreshes `Cargo.lock`.
+3. Updates the README headline/ASCII-mockup HUD version string.
+4. Runs `cargo build` (refreshes the lockfile, proves the tree compiles).
+5. Commits as `Version X.Y.Z: <summary>` and tags `vX.Y.Z`.
 
-Write for a pit user, not for reviewers:
+## Step 3 — Push and let CI build the binaries
 
-- Good: "Overlay groups let you compare odometry and a vision estimate
-  on one field."
-- Bad: "Refactored paint_field_canvas to accept a member list."
+```
+git push --follow-tags
+```
 
-The entry must cover everything in the commit, not just the headline.
+`.github/workflows/release.yml` fires on `v*` tags: it builds Windows,
+Linux and macOS release binaries, packages each with README + CHANGELOG,
+and attaches them to the GitHub Release for the tag. Teammates download
+from the release page — no Rust toolchain required.
 
-## Step 4 — Sync the README (only if the change affects it)
+## Step 4 — Verify
 
-Skip cleanly if the change is invisible to users. Otherwise update:
-
-1. **Headline line** (top of file): `vX.Y.Z presents …` — always bump
-   the number here.
-2. **ASCII mockup HUD line**: `RIONT vX.Y.Z  [COMM: …` — bump the number.
-3. **Feature sections**: if the change altered documented behavior —
-   keymap table, Field Visualization bullets, Connection Picker prose,
-   config examples, Editing/presets — update those sections to match
-   reality. A README that documents yesterday's keymap is worse than
-   none.
-
-## Step 5 — Sync the harness expectation
-
-No manual step: the version checks read `Cargo.toml` dynamically. The
-end-to-end harness's `HUD version == Cargo.toml version (dynamic)` check
-and the Rust test `hud_online_shows_comm_code_uptime_and_cargo_version`
-(compare against `env!("CARGO_PKG_VERSION")`) are the safety nets that
-catch a forgotten bump — do not weaken or remove them.
-
-## Step 6 — Verify
-
-1. Kill any leftover dashboard (a running `riont` binary can lock build
-   output on Windows with a confusing "Access is denied (os error 5)").
-2. `cargo build` — must be clean.
-3. `cargo test` — must pass (this alone verifies the HUD version).
-4. Run the end-to-end suite: `conda run -n nt-tui-test python
-   test/harness.py` (see README's Testing section). All checks must pass
-   (fail-fast: it aborts at the first failure with a full-screen dump).
-5. `git grep` the OLD version string. It may remain in `CHANGELOG.md`
-   history only — never in live code, README headline, or HUD text.
-
-## Step 7 — Commit
-
-One commit containing: the change itself, the `Cargo.toml` bump, the
-changelog entry, the README sync (if any), and the harness expectation.
-Commit message convention in this repo names the version, e.g.
-`Version 0.5.1: humanized HUD disconnect reasons`.
+1. `cargo test` — the `hud_online_shows_comm_code_uptime_and_cargo_version`
+   test proves the HUD shows the new version (dynamic compare, nothing to
+   hand-edit).
+2. `conda run -n nt-tui-test python test/harness.py` — all contract
+   checks pass; the HUD-version check reads Cargo.toml dynamically.
+3. `git grep` the OLD version string: it may remain only in
+   `CHANGELOG.md` history — never in live code or HUD text.
+4. After the push: the GitHub release page shows the binaries and the
+   CHANGELOG body.
 
 ## Common mistakes seen in this repo
 
-- Rebuilding without killing `riont.exe` first, then misreading the
-  lock error as a code problem.
-- Running the harness against a stale binary — the harness auto-builds
-  when the debug binary is missing, but a present-yet-stale binary is on
-  you: `cargo build` after editing `Cargo.toml` before trusting a run.
-- Updating the README headline but forgetting the ASCII mockup HUD
-  line (they are separate strings).
-- Shipping a feature as "part of 0.x" without a bump because "it's
-  just one commit" — every commit is a release candidate; version it.
+- Bumping the version in a feature commit — versions move ONLY via
+  `scripts/release.sh`. Feature commits add `[Unreleased]` bullets.
+- Cutting a release with an empty Unreleased section.
+- Editing the version in README by hand without running the script —
+  headline and ASCII-mockup lines are two separate strings and the script
+  keeps them in sync.
+- Forgetting `--follow-tags`: the tag never reaches origin, no binaries
+  are built, the release page stays empty.

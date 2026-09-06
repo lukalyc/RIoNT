@@ -6,4 +6,10 @@ riont-*.json
 .riont-target
 tui_out.txt
 test/server.log
+test/riont-harness-config.json
+riont-trace.log
 __pycache__/
+
+# release packaging
+stage/
+dist/

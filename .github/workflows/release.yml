@@ -1,0 +1,89 @@
+name: Release
+
+# Fired by pushing a v* tag (scripts/release.sh cuts these). Builds
+# release binaries for Windows / Linux / macOS (Intel + Apple Silicon),
+# packages each with README + CHANGELOG, and attaches them to the GitHub
+# release — so teammates run RIONT without a Rust toolchain.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: ".exe" }
+          - { os: macos-latest,   target: aarch64-apple-darwin,    ext: "" }
+          - { os: macos-latest,   target: x86_64-apple-darwin,     ext: "" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="stage/riont-$VERSION"
+          mkdir -p "$STAGE" dist
+          cp "target/$TARGET/release/riont$EXT" "$STAGE/"
+          cp README.md CHANGELOG.md "$STAGE/"
+          if [[ "$TARGET" == *windows* ]]; then
+            # bsdtar on the Windows runner: -a infers zip from the name.
+            tar -a -c -f "dist/riont-$VERSION-$TARGET.zip" -C stage "riont-$VERSION"
+          else
+            tar -czf "dist/riont-$VERSION-$TARGET.tar.gz" -C stage "riont-$VERSION"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riont-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: extract release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Pull the "## [X.Y.Z]" section (up to the next "## [") as the
+          # release body, falling back to the tag message.
+          awk -v sec="## [$VERSION]" '
+            index($0, sec) == 1 { f = 1; next }
+            f && /^## \[/       { f = 0 }
+            f                   { print }
+          ' CHANGELOG.md > release_body.md
+          [ -s release_body.md ] || echo "RIONT $VERSION" > release_body.md
+      - name: download all packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: attach binaries to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_body.md
+          files: dist/*

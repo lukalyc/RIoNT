@@ -2,10 +2,11 @@
 
 All notable changes to RIONT are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[Semantic Versioning](https://semver.org/). See `AGENTS.md` for the bump
-procedure — every version bump must include a changelog entry.
+[Semantic Versioning](https://semver.org/). See `AGENTS.md` for the
+release procedure: work lands in `[Unreleased]`; a version is cut from
+it by `scripts/release.sh` when the batch is ready to ship.
 
-## [0.6.0] - 2026-09-06
+## [Unreleased]
 
 ### Added
 
@@ -27,7 +28,37 @@ procedure — every version bump must include a changelog entry.
     dropped from minutes to ~11 s and no longer breaks when UI copy is
     reworded.
 
-## [0.5.4] - 2026-09-06
+## [Unreleased] (infrastructure)
+
+### Added
+
+- **CI**: GitHub Actions on every push/PR — rustfmt + clippy (warnings
+  are errors), `cargo test` on Windows/Linux/macOS, and the end-to-end
+  contract harness on Linux (`.github/workflows/ci.yml`).
+- **Release binaries**: pushing a `v*` tag builds Windows/Linux/macOS
+  packages (Intel + Apple Silicon) and attaches them to the GitHub
+  release, so teammates don't need a Rust toolchain
+  (`.github/workflows/release.yml`) — ROADMAP item 9.
+- **`scripts/release.sh`**: cuts a release from the changelog's
+  `## [Unreleased]` section (rotate, bump, tag) — one command.
+
+### Changed
+
+- **Versioning workflow**: versions identify releases, not commits.
+  Per-commit version bumps are replaced by `[Unreleased]` changelog
+  bullets; the version moves exactly once per release, via
+  `scripts/release.sh`. Codebase is now rustfmt-clean and clippy-clean
+  (warnings denied in CI).
+
+## [0.5.5] - 2026-09-06
+
+### Added
+
+- `ROADMAP.md` — mission, non-goals, and prioritized features. Records
+  what RIONT is (fast NT navigation and topic viewing) and what it
+  deliberately is not, so scope creep is prevented rather than debated.
+
+## [0.5.4] - 2026-09-05
 
 ### Added
 

@@ -3,68 +3,69 @@
 Project-specific rules that agents must follow when changing this codebase.
 Human contributors should follow them too.
 
-## Versioning procedure (ALWAYS follow when making changes)
+## Release procedure (CHANGELOG discipline per commit; version at release)
 
-A step-by-step walkthrough of this procedure is available as an agent
-skill: `.agents/skills/version-release/SKILL.md`. Use it; keep the two
-in sync (AGENTS.md wins on any disagreement).
+A step-by-step walkthrough of cutting a release is available as an agent
+skill: `.agents/skills/version-release/SKILL.md`. Keep the two in sync
+(AGENTS.md wins on any disagreement).
 
 The product scope lives in `ROADMAP.md` — read its Mission and
 Non-goals sections before proposing or implementing any feature. If a
 feature idea is listed under Non-goals or Rejected, do not build it.
 
-**Every change that lands in a commit must carry a version bump in
-`Cargo.toml`.** The HUD reads the version at compile time
-(`env!("CARGO_PKG_VERSION")` in `src/ui/mod.rs`), so `Cargo.toml` is the
-single source of truth — never hardcode a version string anywhere else.
+**Commits carry changelog entries, not version bumps.** The version is
+bumped exactly once per release, by `scripts/release.sh` — never by hand
+in a feature commit, and never by an agent.
 
-### 1. Pick the bump level (Semantic Versioning: MAJOR.MINOR.PATCH)
+The HUD reads the version at compile time (`env!("CARGO_PKG_VERSION")`
+in `src/ui/mod.rs`), so `Cargo.toml` is the single source of truth —
+never hardcode a version string anywhere else.
 
-| Change | Bump | Examples |
-| --- | --- | --- |
-| Behavior-affecting bug fix, small polish, test/doc update | **PATCH** (0.3.0 → 0.3.1) | fixing a toast TTL, correcting a hint line |
-| New user-facing feature or capability | **MINOR** (0.3.0 → 0.4.0) | a new palette command, a new card type, a new keybinding, new config keys |
-| Breaking change to the user contract | **MAJOR** (0.3.0 → 1.0.0) | keymap incompatibility, config format that old versions can't read, removed commands/features |
+### 1. Every commit (during work)
 
-When in doubt between PATCH and MINOR, choose MINOR.
+- Do NOT touch `Cargo.toml`'s version.
+- If the commit changes anything user-visible (behavior, UI, config
+  keys, docs), add a bullet under `## [Unreleased]` at the TOP of
+  `CHANGELOG.md`, in the same commit. Use the existing Added / Changed /
+  Fixed / Removed subsections. Write it for a pit user, not for
+  reviewers ("overlay groups let you compare odometry and vision on one
+  field", not "refactored paint_field_canvas").
+- Test/docs/CI-only commits with no user impact may skip the bullet —
+  but when in doubt, add one.
+- README: update feature sections if the change altered documented
+  behavior (keymap, config examples, prose). The headline/mockup version
+  string stays at the last released version until a release is cut.
 
-### 2. Where to bump
+### 2. Cutting a release (deliberate, batches many commits)
 
-- `Cargo.toml` → `version = "x.y.z"` — **required, this is the only place
-  the version lives in code.**
-- `CHANGELOG.md` — **required on every bump**: add an entry for the new
-  version at the TOP of the file (Keep a Changelog format) describing
-  what changed. Added/Changed/Fixed/Removed sections as applicable.
-  Write it for a pit user, not for reviewers ("overlay groups let you
-  compare odometry and vision on one field", not "refactored
-  paint_field_canvas").
-- `README.md` — update the headline line (`vX.Y.Z presents …`) and the
-  ASCII mockup's HUD line if it shows a version.
+Run `scripts/release.sh <patch|minor|major|x.y.z> "summary line"`. It:
 
-### 3. How
+1. Verifies the tree is clean, on `master`, and up to date, and that
+   `## [Unreleased]` is non-empty (an empty release is rejected).
+2. Picks the bump level from the Unreleased content (or the level you
+   pass): bug fixes → PATCH, new user-facing features → MINOR, breaking
+   user-contract changes → MAJOR. When in doubt between PATCH and
+   MINOR, choose MINOR.
+3. Rotates `## [Unreleased]` → `## [X.Y.Z] - <today>`, bumps `Cargo.toml`,
+   refreshes `Cargo.lock`, updates the README headline/mockup version.
+4. Commits as `Version X.Y.Z: <summary>`, tags `vX.Y.Z`.
 
-- Make the bump and changelog entry **in the same commit** as the change
-  they belong to. Do not leave them for a later "housekeeping" commit;
-  every commit should be identifiable by the version it ships.
-- Multiple changes in one commit: ONE bump for the most significant
-  change, with the changelog entry covering everything in the commit.
-- Multiple unrelated commits in a session: bump per commit (PATCH is fine
-  for each if that's all it warrants).
+Then `git push --follow-tags` — CI builds and attaches Windows/Linux/
+macOS release binaries to the GitHub release (`.github/workflows/
+release.yml`). The tagged commit is the binary people run; the HUD
+version on any screenshot therefore identifies its exact release.
 
-### 4. Verify
+### 3. Verify (every commit, release, and CI run)
 
 Run BOTH test tiers (see "Testing workflow" below):
 
 - `cargo test` — in-process tests must pass; the
-  `hud_online_shows_comm_code_uptime_and_cargo_version` test enforces the
-  version (read dynamically — no hardcoded string to update).
+  `hud_online_shows_comm_code_uptime_and_cargo_version` test enforces
+  that the HUD matches `Cargo.toml` (read dynamically — no hardcoded
+  string to update anywhere).
 - `cargo build`, then `python test/harness.py` — the end-to-end contract
   harness (auto-builds if the binary is stale; fail-fast with a full-screen
   dump on the first failure).
-- `git grep` the old version string afterwards; it should only remain in
-  historical/changelog contexts, never in live code or HUD text.
-- Confirm `CHANGELOG.md`'s newest heading matches the new version — an
-  unbumped or unlogged change is an incomplete change.
 
 ## Testing workflow for agents (follow this order)
 
@@ -88,9 +89,9 @@ between seconds and minutes of feedback:
    - auto-builds the debug binary if missing.
 3. **Never weaken a check to make a run green.** If the harness fails,
    either the code regressed or the CONTRACT changed. Both need a
-   deliberate edit with a reason — and a version bump if user-visible.
-   UI-copy/geometry assertions belong in `cargo test` (TestBackend), not
-   in the harness.
+   deliberate edit with a reason — and an `[Unreleased]` changelog bullet
+   if user-visible. UI-copy/geometry assertions belong in `cargo test`
+   (TestBackend), not in the harness.
 4. Env setup: `conda create -n nt-tui-test python=3.11 &&
    /home/<you>/anaconda3/envs/nt-tui-test/bin/pip install pyntcore pyte`,
    then `conda run -n nt-tui-test python test/harness.py`.
@@ -98,5 +99,8 @@ between seconds and minutes of feedback:
 ### Rationale
 
 RIONT is a pit tool: when someone reports a screenshot or a bug, the HUD
-version is the fastest way to know what binary they run. A stale version
-makes every other report ambiguous.
+version is the fastest way to know what binary they run. Versions
+therefore identify *releases* (tagged, CI-built binaries), not commits —
+so every pushed tag must produce runnable artifacts, and the changelog
+must read as release history. Per-commit `[Unreleased]` bullets keep the
+traceability without version spam.
