@@ -8,8 +8,19 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-06
+
 ### Added
 
+- **CI**: GitHub Actions on every push/PR — rustfmt + clippy (warnings
+  are errors), `cargo test` on Windows/Linux/macOS, and the end-to-end
+  contract harness on Linux (`.github/workflows/ci.yml`).
+- **Release binaries**: pushing a `v*` tag builds Windows/Linux/macOS
+  packages (Intel + Apple Silicon) and attaches them to the GitHub
+  release, so teammates don't need a Rust toolchain
+  (`.github/workflows/release.yml`) — ROADMAP item 9.
+- **`scripts/release.sh`**: cuts a release from the changelog's
+  `## [Unreleased]` section (rotate, bump, tag) — one command.
 - `RIONT_CONFIG` environment variable: run RIONT against an alternate
   `config.json` path — hermetic test runs and portable installs. The
   end-to-end harness uses it so tests never touch your real config.
@@ -27,20 +38,6 @@ it by `scripts/release.sh` when the batch is ready to ship.
     fails fast with a full-screen dump on the first failure. A full run
     dropped from minutes to ~11 s and no longer breaks when UI copy is
     reworded.
-
-## [Unreleased] (infrastructure)
-
-### Added
-
-- **CI**: GitHub Actions on every push/PR — rustfmt + clippy (warnings
-  are errors), `cargo test` on Windows/Linux/macOS, and the end-to-end
-  contract harness on Linux (`.github/workflows/ci.yml`).
-- **Release binaries**: pushing a `v*` tag builds Windows/Linux/macOS
-  packages (Intel + Apple Silicon) and attaches them to the GitHub
-  release, so teammates don't need a Rust toolchain
-  (`.github/workflows/release.yml`) — ROADMAP item 9.
-- **`scripts/release.sh`**: cuts a release from the changelog's
-  `## [Unreleased]` section (rotate, bump, tag) — one command.
 
 ### Changed
 

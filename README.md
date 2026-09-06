@@ -9,7 +9,7 @@ right, and a one-line status HUD on top. Anything you pin lands on the
 watchlist as a card; everything on screen updates live.
 
 ```
- RIONT v0.5.5     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
+ RIONT v0.6.0     [COMM: ONLINE (10.99.86.2)]  [CODE: RUNNING]  [UPTIME: 00:04:12]   163 topics
 ┌ TOPIC TREE ┐┌ WATCHLIST ───────────────────────────────────────────────────┐
 │ > [-] limelight-front     │ ┌─ limelight-front/tv ─────────────┐ ┌─ Swerve/FL_Angle ─────┐ │
 │       botpose_wpiblue     │ │ 1.0000                           │ │ 182.4°                │ │

@@ -40,6 +40,8 @@ git fetch origin --quiet
 git merge-base --is-ancestor origin/master HEAD || { echo "ERROR: master is behind origin/master — pull --rebase first." >&2; exit 1; }
 
 grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "ERROR: CHANGELOG.md has no ## [Unreleased] section." >&2; exit 1; }
+COUNT=$(grep -c '^## \[Unreleased\]' CHANGELOG.md)
+[[ "$COUNT" -eq 1 ]] || { echo "ERROR: CHANGELOG.md has $COUNT '## [Unreleased]' headings — exactly one is required (fix the structure first)." >&2; exit 1; }
 # Non-empty Unreleased: content between the Unreleased heading and the next
 # version heading, excluding blank lines and the Added/Changed/... headers.
 UNRELEASED_BODY=$(awk '/^## \[Unreleased\]/{f=1;next} /^## /{f=0} f' CHANGELOG.md | grep -Ev '^\s*$|^### ' || true)
