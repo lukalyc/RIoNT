@@ -66,21 +66,21 @@ Skip cleanly if the change is invisible to users. Otherwise update:
 
 ## Step 5 — Sync the harness expectation
 
-`test/harness.py` has one hardcoded version string, in the check named
-`T1g version matches Cargo.toml` (near the top of `main()`). Update it
-to the new version. This check is the safety net that catches a
-forgotten bump — do not weaken or remove it.
+No manual step: the version checks read `Cargo.toml` dynamically. The
+end-to-end harness's `HUD version == Cargo.toml version (dynamic)` check
+and the Rust test `hud_online_shows_comm_code_uptime_and_cargo_version`
+(compare against `env!("CARGO_PKG_VERSION")`) are the safety nets that
+catch a forgotten bump — do not weaken or remove them.
 
 ## Step 6 — Verify
 
-1. Kill any leftover dashboard (a running `riont.exe` locks the build
-   output with a confusing "Access is denied (os error 5)"):
-   `taskkill //F //IM riont.exe`
+1. Kill any leftover dashboard (a running `riont` binary can lock build
+   output on Windows with a confusing "Access is denied (os error 5)").
 2. `cargo build` — must be clean.
-3. `cargo test` — must pass.
-4. Run the end-to-end suite: `python test/harness.py` (see README's
-   Testing section for the conda env). 97+ checks must pass, including
-   T1g.
+3. `cargo test` — must pass (this alone verifies the HUD version).
+4. Run the end-to-end suite: `conda run -n nt-tui-test python
+   test/harness.py` (see README's Testing section). All checks must pass
+   (fail-fast: it aborts at the first failure with a full-screen dump).
 5. `git grep` the OLD version string. It may remain in `CHANGELOG.md`
    history only — never in live code, README headline, or HUD text.
 
@@ -95,8 +95,9 @@ Commit message convention in this repo names the version, e.g.
 
 - Rebuilding without killing `riont.exe` first, then misreading the
   lock error as a code problem.
-- Running the harness against a stale binary after editing `Cargo.toml`
-  — always `cargo build` before `python test/harness.py`.
+- Running the harness against a stale binary — the harness auto-builds
+  when the debug binary is missing, but a present-yet-stale binary is on
+  you: `cargo build` after editing `Cargo.toml` before trusting a run.
 - Updating the README headline but forgetting the ASCII mockup HUD
   line (they are separate strings).
 - Shipping a feature as "part of 0.x" without a bump because "it's

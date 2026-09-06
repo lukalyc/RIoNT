@@ -79,7 +79,11 @@ pub enum NtValue {
     Json(String),
     Raw(Vec<u8>),
     /// Decoded WPILib Pose2d: meters + radians, blue-alliance origin.
-    Pose2d { x: f64, y: f64, radians: f64 },
+    Pose2d {
+        x: f64,
+        y: f64,
+        radians: f64,
+    },
 }
 
 impl NtValue {
@@ -113,7 +117,12 @@ impl NtValue {
             NtValue::Int(i) => i.to_string(),
             NtValue::Str(s) => s.clone(),
             NtValue::BooleanArray(v) => {
-                format!("[{}]", v.iter().map(|b| if *b { "T" } else { "F" }).collect::<String>())
+                format!(
+                    "[{}]",
+                    v.iter()
+                        .map(|b| if *b { "T" } else { "F" })
+                        .collect::<String>()
+                )
             }
             NtValue::DoubleArray(v) => format!(
                 "[{}]",
@@ -125,7 +134,11 @@ impl NtValue {
             ),
             NtValue::IntArray(v) => format!(
                 "[{}]",
-                v.iter().take(8).map(|i| i.to_string()).collect::<Vec<_>>().join(" ")
+                v.iter()
+                    .take(8)
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             NtValue::StringArray(v) => format!("[{}]", v.join(", ")),
             NtValue::Json(s) => s.clone(),
@@ -259,8 +272,7 @@ impl TopicData {
 
     /// Seconds since last update (or None).
     pub fn age_secs(&self) -> Option<f64> {
-        self.last_update
-            .map(|t| t.elapsed().as_secs_f64())
+        self.last_update.map(|t| t.elapsed().as_secs_f64())
     }
 }
 

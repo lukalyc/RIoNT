@@ -159,7 +159,11 @@ mod tests {
         assert!(classify(
             "odometry/pose",
             Some("struct:Pose3d"),
-            &NtValue::Pose2d { x: 1.0, y: 2.0, radians: 0.0 }
+            &NtValue::Pose2d {
+                x: 1.0,
+                y: 2.0,
+                radians: 0.0
+            }
         )
         .is_none());
     }
@@ -190,7 +194,9 @@ mod tests {
         let b = vec![0u8; 24];
         assert!(decode_pose2d(
             &b,
-            Some("SwerveModuleState{angle:Rotation2d{radians:double}, speedMetersPerSecond:double}")
+            Some(
+                "SwerveModuleState{angle:Rotation2d{radians:double}, speedMetersPerSecond:double}"
+            )
         )
         .is_none());
     }

@@ -97,11 +97,20 @@ pub const COMMANDS: [(Command, &str); 16] = [
     (Command::SettingsOpen, "Settings: Open Configuration"),
     (Command::SettingsView, "Settings: View Settings"),
     (Command::SettingsAddTarget, "Settings: Add Robot Target"),
-    (Command::SettingsRemoveTarget, "Settings: Remove Robot Target"),
-    (Command::WatchlistSavePreset, "Watchlist: Save Active as Preset"),
+    (
+        Command::SettingsRemoveTarget,
+        "Settings: Remove Robot Target",
+    ),
+    (
+        Command::WatchlistSavePreset,
+        "Watchlist: Save Active as Preset",
+    ),
     (Command::WatchlistLoadPreset, "Watchlist: Load Preset"),
     (Command::WatchlistClear, "Watchlist: Clear All"),
-    (Command::WatchlistRestorePrevious, "Watchlist: Restore Previous"),
+    (
+        Command::WatchlistRestorePrevious,
+        "Watchlist: Restore Previous",
+    ),
     (Command::FieldAllianceBlue, "Field: Set Alliance Blue"),
     (Command::FieldAllianceRed, "Field: Set Alliance Red"),
     (
@@ -122,8 +131,8 @@ pub enum PromptKind {
     SavePreset,
 }
 
-/// What the main loop should do after a keypress.
-#[derive(Debug)]
+/// Outcome of a key press: what the caller (main loop) must do about it.
+#[derive(Debug, PartialEq)]
 pub enum UiAction {
     Quit,
     None,
@@ -214,6 +223,20 @@ pub struct App {
 impl App {
     pub fn new(target: String) -> Self {
         let (config, config_err) = crate::config::Config::load();
+        let mut app = Self::with_config(target, config);
+        if let Some(e) = config_err {
+            app.toast(
+                ToastKind::Warn,
+                format!("config invalid, using defaults ({})", e),
+            );
+        }
+        app
+    }
+
+    /// Constructor body shared by `new` (host config) and `new_test`
+    /// (in-memory defaults). Keep both behavior-identical apart from the
+    /// config source.
+    fn with_config(target: String, config: crate::config::Config) -> Self {
         let mut app = App {
             store: Store::new(),
             target,
@@ -256,12 +279,6 @@ impl App {
                 .expect("default map is built in"),
             retry_attempt: 0,
         };
-        if let Some(e) = config_err {
-            app.toast(
-                ToastKind::Warn,
-                format!("config invalid, using defaults ({})", e),
-            );
-        }
         // Resolve the field map from the (possibly just-loaded) config; a
         // broken walls_file falls back to the built-in map with a warning.
         let (map, field_warn) = crate::field::resolve(&app.config);
@@ -283,6 +300,15 @@ impl App {
             })
             .collect();
         app
+    }
+
+    /// Test-only constructor: in-memory default config, never reads or
+    /// writes the host's config.json until a test exercises a save path
+    /// (and `RIONT_CONFIG` then redirects that to a scratch file — see
+    /// `tests_tui.rs`).
+    #[cfg(test)]
+    pub fn new_test(target: String) -> Self {
+        Self::with_config(target, crate::config::Config::with_defaults())
     }
 
     // ------------------------------------------------------------------
@@ -380,7 +406,8 @@ impl App {
     /// is a topic, Some(dir path) for directories, None if out of range.
     pub fn cursor_path(&self) -> Option<(String, bool)> {
         let rows = crate::ui::tree::build_tree(&self.store, &self.expanded);
-        rows.get(self.tree_cursor).map(|r| (r.path.clone(), r.is_topic))
+        rows.get(self.tree_cursor)
+            .map(|r| (r.path.clone(), r.is_topic))
     }
 
     fn expand_ancestors(&mut self, topic: &str) {
@@ -419,7 +446,8 @@ impl App {
                 self.toast(ToastKind::Success, format!("pinned {}", path));
             }
         } else if self.watchlist.contains(&MatrixSource::Glob(path.clone())) {
-            self.watchlist.retain(|s| s != &MatrixSource::Glob(path.clone()));
+            self.watchlist
+                .retain(|s| s != &MatrixSource::Glob(path.clone()));
             self.toast(ToastKind::Info, format!("unpinned {}/*", path));
         } else {
             self.watchlist.push(MatrixSource::Glob(path.clone()));
@@ -513,13 +541,7 @@ impl App {
         let mut overlay_seen = false;
         raw.into_iter()
             .filter(|c| {
-                if self.is_field_card(c)
-                    && self
-                        .config
-                        .field
-                        .overlay_topics
-                        .iter()
-                        .any(|t| t == c)
+                if self.is_field_card(c) && self.config.field.overlay_topics.iter().any(|t| t == c)
                 {
                     if overlay_seen {
                         return false; // later members hide inside the composite
@@ -562,25 +584,14 @@ impl App {
         if !self.is_field_card(topic) {
             return Vec::new();
         }
-        let member = self
-            .config
-            .field
-            .overlay_topics
-            .iter()
-            .any(|t| t == topic);
+        let member = self.config.field.overlay_topics.iter().any(|t| t == topic);
         if !member {
             return vec![topic.to_string()];
         }
         self.watchlist_cells_raw()
             .into_iter()
             .filter(|c| {
-                self.is_field_card(c)
-                    && self
-                        .config
-                        .field
-                        .overlay_topics
-                        .iter()
-                        .any(|t| t == c)
+                self.is_field_card(c) && self.config.field.overlay_topics.iter().any(|t| t == c)
             })
             .collect()
     }
@@ -613,13 +624,9 @@ impl App {
     /// The topic the current focus points at (tree cursor or watchlist card).
     pub fn active_topic(&self) -> Option<String> {
         match self.focus {
-            Focus::Tree => self.cursor_path().and_then(|(p, is_topic)| {
-                if is_topic {
-                    Some(p)
-                } else {
-                    None
-                }
-            }),
+            Focus::Tree => self
+                .cursor_path()
+                .and_then(|(p, is_topic)| if is_topic { Some(p) } else { None }),
             Focus::Watchlist => self.watchlist_cells().get(self.watchlist_cursor).cloned(),
         }
     }
@@ -640,7 +647,9 @@ impl App {
                 }
                 // FieldView is a passive readout: Ctrl-C closes it like
                 // Esc rather than quitting the app mid-inspection.
-                Mode::FieldView => self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
+                Mode::FieldView => {
+                    self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+                }
                 Mode::Normal | Mode::PickTarget | Mode::PickPreset | Mode::SettingsView => {
                     UiAction::Quit
                 }
@@ -851,10 +860,7 @@ impl App {
                         }
                         self.toast(
                             ToastKind::Warn,
-                            format!(
-                                "removed overlay: {} topics — u restores",
-                                members.len()
-                            ),
+                            format!("removed overlay: {} topics — u restores", members.len()),
                         );
                     } else {
                         self.unpin_topic(&topic);
@@ -1009,7 +1015,11 @@ impl App {
             None => {
                 self.toast(
                     ToastKind::Warn,
-                    format!("no preset {} ({} loaded from config)", idx + 1, presets.len()),
+                    format!(
+                        "no preset {} ({} loaded from config)",
+                        idx + 1,
+                        presets.len()
+                    ),
                 );
             }
         }
@@ -1043,7 +1053,10 @@ impl App {
                 ),
             );
         } else {
-            self.toast(ToastKind::Success, format!("preset {}: {} card(s)", name, n));
+            self.toast(
+                ToastKind::Success,
+                format!("preset {}: {} card(s)", name, n),
+            );
         }
         self.persist_watchlist();
     }
@@ -1084,8 +1097,8 @@ impl App {
             // Arrows only: j/k are typed into the query, not movement —
             // topic names contain those letters ("SparkMax").
             KeyCode::Down => {
-                self.search_cursor = (self.search_cursor + 1)
-                    .min(self.search_matches.len().saturating_sub(1));
+                self.search_cursor =
+                    (self.search_cursor + 1).min(self.search_matches.len().saturating_sub(1));
             }
             KeyCode::Up => {
                 self.search_cursor = self.search_cursor.saturating_sub(1);
@@ -1111,8 +1124,8 @@ impl App {
             }
             // Arrows only: j/k are typed into the query, not movement.
             KeyCode::Down => {
-                self.palette_cursor = (self.palette_cursor + 1)
-                    .min(self.palette_matches.len().saturating_sub(1));
+                self.palette_cursor =
+                    (self.palette_cursor + 1).min(self.palette_matches.len().saturating_sub(1));
             }
             KeyCode::Up => {
                 self.palette_cursor = self.palette_cursor.saturating_sub(1);
@@ -1150,7 +1163,10 @@ impl App {
             Command::ReconnectNt => {
                 // Pure internal client action: drop the socket, re-handshake
                 // with the same target. Never queries a topic.
-                self.toast(ToastKind::Info, format!("reconnecting to {}...", self.target));
+                self.toast(
+                    ToastKind::Info,
+                    format!("reconnecting to {}...", self.target),
+                );
                 UiAction::Client(ClientCommand::Reconnect)
             }
             Command::WatchlistClear => {
@@ -1297,7 +1313,10 @@ impl App {
             }
             Command::WatchlistLoadPreset => {
                 if self.preset_list().is_empty() {
-                    self.toast(ToastKind::Warn, "no presets configured (save one with 'Watchlist: Save Active as Preset')");
+                    self.toast(
+                        ToastKind::Warn,
+                        "no presets configured (save one with 'Watchlist: Save Active as Preset')",
+                    );
                 } else {
                     self.mode = Mode::PickPreset;
                     self.picker_cursor = 0;
@@ -1308,14 +1327,23 @@ impl App {
                 // Primary method: background SSH to the robot (no NT topic
                 // involved). The client task spawns it asynchronously and
                 // reports the outcome as a toast.
-                let host = self.target.split(':').next().unwrap_or(&self.target).to_string();
+                let host = self
+                    .target
+                    .split(':')
+                    .next()
+                    .unwrap_or(&self.target)
+                    .to_string();
                 let user = self.config.system.ssh_user.clone();
                 let restart = self.config.system.restart_cmd.clone();
                 self.toast(
                     ToastKind::Info,
                     format!("restart: ssh {}@{}...", user, host),
                 );
-                UiAction::Client(ClientCommand::RestartRobotCode { host, user, cmd: restart })
+                UiAction::Client(ClientCommand::RestartRobotCode {
+                    host,
+                    user,
+                    cmd: restart,
+                })
             }
         }
     }
@@ -1399,7 +1427,8 @@ impl App {
             // Arrows only: j/k are typed into the address, not movement
             // (hostnames contain those letters).
             KeyCode::Down => {
-                self.connect_cursor = (self.connect_cursor + 1).min(targets.len().saturating_sub(1));
+                self.connect_cursor =
+                    (self.connect_cursor + 1).min(targets.len().saturating_sub(1));
             }
             KeyCode::Up => {
                 self.connect_cursor = self.connect_cursor.saturating_sub(1);
@@ -1470,7 +1499,10 @@ impl App {
                         let (name, addr) = match input.split_once(' ') {
                             Some((nm, rest)) if !rest.trim().is_empty() => {
                                 let _ = nm;
-                                (input[..input.len() - rest.len()].trim().to_string(), rest.trim().to_string())
+                                (
+                                    input[..input.len() - rest.len()].trim().to_string(),
+                                    rest.trim().to_string(),
+                                )
                             }
                             _ => {
                                 let addr = resolve_target(&input);
@@ -1485,7 +1517,10 @@ impl App {
                         let addr = resolve_target(&addr);
                         // Replace an existing entry for the same address.
                         self.config.saved_targets.retain(|t| t.ip != addr);
-                        self.config.saved_targets.push(SavedTarget { name: name.clone(), ip: addr });
+                        self.config.saved_targets.push(SavedTarget {
+                            name: name.clone(),
+                            ip: addr,
+                        });
                         if let Err(e) = self.config.save() {
                             self.toast(ToastKind::Error, format!("save config: {}", e));
                         }
@@ -1633,7 +1668,7 @@ impl App {
             .into_iter()
             .filter_map(|n| matcher.fuzzy_match(&n, &self.query).map(|s| (s, n)))
             .collect();
-        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_unstable_by_key(|(score, _)| std::cmp::Reverse(*score));
         self.search_matches = scored.into_iter().map(|(_, n)| n).collect();
         self.search_cursor = 0;
     }
@@ -1648,10 +1683,12 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(i, (_, name))| {
-                matcher.fuzzy_match(name, &self.palette_query).map(|s| (s, i))
+                matcher
+                    .fuzzy_match(name, &self.palette_query)
+                    .map(|s| (s, i))
             })
             .collect();
-        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_unstable_by_key(|(score, _)| std::cmp::Reverse(*score));
         self.palette_matches = scored.into_iter().map(|(_, i)| i).collect();
         self.palette_cursor = 0;
     }
@@ -1664,8 +1701,8 @@ fn parse_value(s: &str, hint: Option<NtType>) -> Result<NtValue, String> {
         return Err("empty value".into());
     }
     match hint {
-        Some(NtType::Boolean) | None if s.eq_ignore_ascii_case("true")
-            || s.eq_ignore_ascii_case("false") =>
+        Some(NtType::Boolean) | None
+            if s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false") =>
         {
             Ok(NtValue::Boolean(s.eq_ignore_ascii_case("true")))
         }

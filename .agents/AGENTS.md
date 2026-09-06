@@ -53,13 +53,47 @@ When in doubt between PATCH and MINOR, choose MINOR.
 
 ### 4. Verify
 
-- `cargo build` then check the HUD renders the new version (the harness's
-  `T1g version matches Cargo.toml` check enforces this — run
-  `python test/harness.py` per README's Testing section before committing).
+Run BOTH test tiers (see "Testing workflow" below):
+
+- `cargo test` — in-process tests must pass; the
+  `hud_online_shows_comm_code_uptime_and_cargo_version` test enforces the
+  version (read dynamically — no hardcoded string to update).
+- `cargo build`, then `python test/harness.py` — the end-to-end contract
+  harness (auto-builds if the binary is stale; fail-fast with a full-screen
+  dump on the first failure).
 - `git grep` the old version string afterwards; it should only remain in
   historical/changelog contexts, never in live code or HUD text.
 - Confirm `CHANGELOG.md`'s newest heading matches the new version — an
   unbumped or unlogged change is an incomplete change.
+
+## Testing workflow for agents (follow this order)
+
+The test pyramid has two tiers. Choosing the right one is the difference
+between seconds and minutes of feedback:
+
+1. **`cargo test` FIRST, always.** Logic, state and rendering are covered
+   in-process (unit tests in `pose.rs`/`store.rs`/`field.rs`/`config.rs`,
+   full-TUI tests in `src/tests_tui.rs` using a TestBackend). Milliseconds,
+   deterministic, hermetic. Most bugs are found and fixed here.
+2. **`python test/harness.py` for the integration contract.** Only the
+   real binary against a real ntcore server proves the socket, the wire
+   protocol, reconnects and persistence. The harness:
+   - synchronizes by polling (never fixed sleeps), so it does not flake
+     on slow machines — do not "fix" flakiness by adding sleeps;
+   - asserts only cross-process contracts (server-received values, HUD
+     transitions, config side effects), never exact UI wording, colors or
+     geometry — a wording change must NEVER require harness edits;
+   - fails FAST at the first failed check with a full-screen dump — fix
+     that one check's cause, do not mass-adjust assertions;
+   - auto-builds the debug binary if missing.
+3. **Never weaken a check to make a run green.** If the harness fails,
+   either the code regressed or the CONTRACT changed. Both need a
+   deliberate edit with a reason — and a version bump if user-visible.
+   UI-copy/geometry assertions belong in `cargo test` (TestBackend), not
+   in the harness.
+4. Env setup: `conda create -n nt-tui-test python=3.11 &&
+   /home/<you>/anaconda3/envs/nt-tui-test/bin/pip install pyntcore pyte`,
+   then `conda run -n nt-tui-test python test/harness.py`.
 
 ### Rationale
 

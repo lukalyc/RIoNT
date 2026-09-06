@@ -8,6 +8,17 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Test-only config redirect, set exactly once by `tests_tui` before any
+/// test constructs an App. A `OnceLock` (not env mutation) keeps parallel
+/// test threads safe.
+#[cfg(test)]
+static TEST_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_test_path(p: std::path::PathBuf) {
+    let _ = TEST_PATH.set(p);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedTarget {
     pub name: String,
@@ -112,8 +123,14 @@ impl Config {
             last_target: None,
             last_view: Vec::new(),
             saved_targets: vec![
-                SavedTarget { name: "Simulation".into(), ip: "127.0.0.1:5810".into() },
-                SavedTarget { name: "USB Tether".into(), ip: "172.22.11.2".into() },
+                SavedTarget {
+                    name: "Simulation".into(),
+                    ip: "127.0.0.1:5810".into(),
+                },
+                SavedTarget {
+                    name: "USB Tether".into(),
+                    ip: "172.22.11.2".into(),
+                },
             ],
             presets: std::collections::BTreeMap::new(),
             system: SystemSettings::default(),
@@ -122,8 +139,21 @@ impl Config {
         }
     }
 
-    /// `~/.config/riont/config.json`
+    /// `~/.config/riont/config.json`, or the path in `RIONT_CONFIG` when
+    /// set (hermetic runs, portable installs). Under `cfg(test)` a
+    /// once-initialized scratch path wins over everything so parallel
+    /// test threads can never read or write the host config (see
+    /// `Config::set_test_path`).
     pub fn path() -> PathBuf {
+        #[cfg(test)]
+        if let Some(p) = TEST_PATH.get() {
+            return p.clone();
+        }
+        if let Ok(p) = std::env::var("RIONT_CONFIG") {
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
+        }
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
@@ -186,6 +216,9 @@ impl Config {
 
     /// Workspace presets in file order (BTreeMap keeps them stable).
     pub fn preset_list(&self) -> Vec<(String, Vec<String>)> {
-        self.presets.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.presets
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }

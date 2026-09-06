@@ -165,7 +165,9 @@ Picker** selects, the **Palette** triggers, **Settings** persists.
 
 ### Settings & persistence
 
-Everything lives in `~/.config/riont/config.json`:
+Everything lives in `~/.config/riont/config.json` (override the path with
+the `RIONT_CONFIG` environment variable — useful for portable installs
+and hermetic test runs):
 
 ```json
 {
@@ -323,6 +325,21 @@ Per-topic telemetry: publish rate (Hz, 2 s sliding window) and Δ since last
 change. The client measures RTT/clock offset internally — used only for
 clock-synced publishes, never shown as a headline metric.
 
+## Development & releases
+
+- **Tests:** `cargo test` (fast, in-process) and the contract harness
+  (see Testing above). CI runs both on every push/PR — lint (rustfmt +
+  clippy, warnings are errors), tests on Windows/Linux/macOS, and the
+  E2E harness on Linux.
+- **Changelog:** every user-visible change adds a bullet under
+  `## [Unreleased]` in `CHANGELOG.md` in the same commit. Versions are
+  never bumped by hand.
+- **Cutting a release:** `scripts/release.sh <patch|minor|major>
+  "summary"` rotates Unreleased into the new version, bumps
+  `Cargo.toml`, tags `vX.Y.Z`, then `git push --follow-tags` makes CI
+  build and attach Windows/Linux/macOS binaries to the GitHub release.
+  Full walkthrough: `.agents/AGENTS.md` (release procedure).
+
 ## Protocol notes
 
 The client speaks NT4 over WebSocket (subprotocol
@@ -335,14 +352,29 @@ retransmission, auto-reconnect with retry counter, 5s connect timeout.
 
 ## Testing
 
+Two tiers, run the fast one first:
+
 ```
-conda activate nt-tui-test
-python test/server.py    # fake robot: real ntcore NT4 server on 5814
-python test/harness.py   # 97-check end-to-end suite (headless TUI + pyte)
-python test/smoke.py     # visual smoke dump of the RIONT layout
+cargo test                                       # tier 1: in-process, milliseconds
+conda activate nt-tui-test                       # tier 2: end-to-end contract harness
+python test/harness.py                           #   fake robot + headless TUI + pyte
+python test/smoke.py                             #   visual smoke dump of the RIONT layout
 ```
 
-The harness drives the TUI via stdin keystroke scripts, renders through
-pyte, mutates values from a second ntcore client, and exercises search
-jump/pin, watchlist packing + `x` removal, the command palette, inline edit
-round-trips, retarget and reconnect flows.
+**Tier 1 (`cargo test`)** — logic and rendering, fully hermetic:
+`src/tests_tui.rs` drives keystrokes through `App::handle_key`, feeds NT
+values through `App::apply_values`, renders into a ratatui `TestBackend`,
+and asserts on the buffer — publish commands, toasts, tree/palette/picker
+behavior, field cards. Tests never touch your `~/.config/riont`.
+
+**Tier 2 (`test/harness.py`)** — the real binary against a real ntcore
+server. It verifies only cross-process CONTRACTS: values the fake robot
+receives after an edit round-trip, HUD state transitions (ONLINE →
+DISCONNECTED → ONLINE), watchlist counts, config-file side effects. It
+synchronizes by polling for expected state (never fixed sleeps), fails
+fast on the first failure with a full-screen dump, and runs in ~15 s.
+Set `RIONT_HARNESS_CONTINUE=1` to collect all failures instead of
+stopping at the first.
+
+Rule of thumb: if a change only rewords UI copy or adjusts geometry,
+`cargo test` is the arbiter — the harness must not need editing for that.

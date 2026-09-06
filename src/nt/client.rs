@@ -42,8 +42,13 @@ const DT_STRING_ARRAY: u64 = 20;
 pub enum NtUpdate {
     /// Trying to reach `target`; `attempt` counts retries since the last
     /// successful connection (0 = first try).
-    Connecting { target: String, attempt: u32 },
-    Connected { server_info: String },
+    Connecting {
+        target: String,
+        attempt: u32,
+    },
+    Connected {
+        server_info: String,
+    },
     Disconnected(String),
     /// (topic, value, server_timestamp_us) batch.
     Values(Vec<(String, NtValue, u64)>),
@@ -77,7 +82,7 @@ pub enum NtUpdate {
 }
 
 /// Things the UI asks the client to do.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClientCommand {
     /// Publish a value to a topic (declares the topic if needed).
     Publish { topic: String, value: NtValue },
@@ -86,14 +91,21 @@ pub enum ClientCommand {
     /// Drop the socket and connect to a different target instead.
     Retarget(String),
     /// Dispatch a background SSH command that restarts the robot code.
-    RestartRobotCode { host: String, user: String, cmd: String },
+    RestartRobotCode {
+        host: String,
+        user: String,
+        cmd: String,
+    },
 }
 
 pub fn channel() -> (UnboundedSender<NtUpdate>, UnboundedReceiver<NtUpdate>) {
     unbounded_channel()
 }
 
-pub fn command_channel() -> (UnboundedSender<ClientCommand>, UnboundedReceiver<ClientCommand>) {
+pub fn command_channel() -> (
+    UnboundedSender<ClientCommand>,
+    UnboundedReceiver<ClientCommand>,
+) {
     unbounded_channel()
 }
 
@@ -109,12 +121,7 @@ fn local_us() -> u64 {
 /// background task; the outcome lands back in the UI as a toast. Never
 /// touches NetworkTables — the command comes straight from config.json
 /// (`system.ssh_user` + `system.restart_cmd`).
-fn spawn_restart(
-    updates: &UnboundedSender<NtUpdate>,
-    host: String,
-    user: String,
-    cmd: String,
-) {
+fn spawn_restart(updates: &UnboundedSender<NtUpdate>, host: String, user: String, cmd: String) {
     let updates = updates.clone();
     tokio::spawn(async move {
         let started = Instant::now();
@@ -144,7 +151,12 @@ fn spawn_restart(
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                let detail = stderr.lines().last().unwrap_or("ssh failed").trim().to_string();
+                let detail = stderr
+                    .lines()
+                    .last()
+                    .unwrap_or("ssh failed")
+                    .trim()
+                    .to_string();
                 updates
                     .send(NtUpdate::Toast {
                         kind: crate::app::ToastKind::Error,
@@ -171,7 +183,10 @@ fn spawn_restart(
 type DebugLog = Option<std::io::BufWriter<std::fs::File>>;
 
 fn open_debug_log() -> DebugLog {
-    if std::env::var("RIONT_DEBUG").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("RIONT_DEBUG")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         std::fs::File::create("riont-debug.log")
             .ok()
             .map(std::io::BufWriter::new)
@@ -227,7 +242,10 @@ pub async fn run_client(
     let mut last_reason: Option<String> = None;
     loop {
         updates
-            .send(NtUpdate::Connecting { target: target.clone(), attempt })
+            .send(NtUpdate::Connecting {
+                target: target.clone(),
+                attempt,
+            })
             .ok();
         let outcome = session(&target, &updates, &mut commands, &commands_tx, &retarget_to).await;
         // Ok = the session got connected before dying; Err = it never did
@@ -239,7 +257,9 @@ pub async fn run_client(
         // A deliberate retarget, manual reconnect, or restart-during-connect
         // is not a disconnect; don't report them as one so the UI's HUD
         // state stays up.
-        if reason != "retarget" && reason != "reconnect requested" && reason != "restart during connect"
+        if reason != "retarget"
+            && reason != "reconnect requested"
+            && reason != "restart during connect"
             && last_reason.as_deref() != Some(reason.as_str())
         {
             updates.send(NtUpdate::Disconnected(reason.clone())).ok();
@@ -266,7 +286,11 @@ pub async fn run_client(
             },
         }
         if let Some(t) = retarget_to.lock().unwrap().take() {
-            target = if t.contains(':') { t } else { format!("{}:{}", t, NT_PORT) };
+            target = if t.contains(':') {
+                t
+            } else {
+                format!("{}:{}", t, NT_PORT)
+            };
             attempt = 0; // new target, fresh retry count
         } else {
             attempt = attempt.saturating_add(1);
@@ -330,7 +354,6 @@ async fn session(
     // Ok/Err contract with run_client: Ok means "this session had been
     // connected when it died", so the caller can reset its dedupe state.
     // Deferred init: every path that reads it passes the assignment below.
-    let was_connected;
 
     // ---- subscribe to everything, all values, fast periodic.
     let subscribe = json!([{
@@ -345,13 +368,13 @@ async fn session(
             }
         }
     }]);
-    sink.send(WsMessage::Text(subscribe.to_string().into()))
+    sink.send(WsMessage::Text(subscribe.to_string()))
         .await
         .map_err(|e| format!("send subscribe: {}", e))?;
     debug_msg(&mut debug_log, "subscribe sent");
     // Every path from here on had a live link; early returns above never
     // reach the Ok/Err tail that reads this.
-    was_connected = true;
+    let was_connected = true;
     updates
         .send(NtUpdate::Connected {
             server_info: "NT4 server".into(),
@@ -423,11 +446,10 @@ async fn session(
                     Mv::Integer((now as i64).into()),
                 ];
                 let mut buf = Vec::new();
-                if write_value(&mut buf, &Mv::Array(rtt_msg)).is_ok() {
-                    if sink.send(WsMessage::Binary(buf.into())).await.is_err() {
+                if write_value(&mut buf, &Mv::Array(rtt_msg)).is_ok()
+                    && sink.send(WsMessage::Binary(buf)).await.is_err() {
                         break "write rtt".into();
                     }
-                }
             }
             _ = flush.tick() => {
                 // Retransmit value frames for unconfirmed publishes: the
@@ -440,7 +462,7 @@ async fn session(
                         }
                     }
                     for (i, frame) in resend {
-                        if sink.send(WsMessage::Binary(frame.into())).await.is_ok() {
+                        if sink.send(WsMessage::Binary(frame)).await.is_ok() {
                             pending[i].tries += 1;
                             pending[i].last_sent = Instant::now();
                         }
@@ -500,12 +522,12 @@ async fn session(
                             "publish {} = {:?} json={} bin_hex={}",
                             topic,
                             value,
-                            publish.to_string(),
+                            publish,
                             hex(&bin)
                         ));
-                        if sink.send(WsMessage::Text(publish.to_string().into())).await.is_ok()
+                        if sink.send(WsMessage::Text(publish.to_string())).await.is_ok()
                             && ok
-                            && sink.send(WsMessage::Binary(bin.clone().into())).await.is_ok()
+                            && sink.send(WsMessage::Binary(bin.clone())).await.is_ok()
                         {
                             pending.push(Pending {
                                 frame: bin,
@@ -531,7 +553,7 @@ async fn session(
     }
 }
 
-/// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // JSON control messages
 // ---------------------------------------------------------------------------
 
@@ -560,29 +582,33 @@ fn handle_text(
                 let id = params.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let type_str = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let props = params.get("properties").cloned().unwrap_or(json!({}));
-                debug_msg(log, &format!("announce id={} name={} type={}", id, name, type_str));
+                debug_msg(
+                    log,
+                    &format!("announce id={} name={} type={}", id, name, type_str),
+                );
                 // Announce carrying our pubuid = server confirmed our publish.
                 // NOTE: do NOT cancel retransmissions here — the server still
                 // drops the first VALUE frame for a fresh pubuid; the pending
                 // entry ages out after its retries.
                 topic_by_id.insert(id, name.clone());
-                updates.send(NtUpdate::TopicMeta {
-                    name,
-                    id,
-                    data_type: Some(NtType::from_str(type_str)),
-                    persistent: props.get("persistent").and_then(|v| v.as_bool()),
-                    retained: props.get("retained").and_then(|v| v.as_bool()),
-                    type_str: if type_str.is_empty() {
-                        None
-                    } else {
-                        Some(type_str.to_string())
-                    },
-                    struct_schema: props
-                        .get("structSchema")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                })
-                .ok();
+                updates
+                    .send(NtUpdate::TopicMeta {
+                        name,
+                        id,
+                        data_type: Some(NtType::from_str(type_str)),
+                        persistent: props.get("persistent").and_then(|v| v.as_bool()),
+                        retained: props.get("retained").and_then(|v| v.as_bool()),
+                        type_str: if type_str.is_empty() {
+                            None
+                        } else {
+                            Some(type_str.to_string())
+                        },
+                        struct_schema: props
+                            .get("structSchema")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                    })
+                    .ok();
             }
             "unannounce" => {
                 let raw = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -597,19 +623,20 @@ fn handle_text(
                 let name = raw.strip_prefix('/').unwrap_or(raw).to_string();
                 let update = params.get("update").cloned().unwrap_or(json!({}));
                 debug_msg(log, &format!("properties name={} update={}", name, update));
-                updates.send(NtUpdate::TopicMeta {
-                    name,
-                    id: u64::MAX, // unknown; id unchanged
-                    data_type: None,
-                    persistent: update.get("persistent").and_then(|v| v.as_bool()),
-                    retained: update.get("retained").and_then(|v| v.as_bool()),
-                    type_str: None,
-                    struct_schema: update
-                        .get("structSchema")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
-                })
-                .ok();
+                updates
+                    .send(NtUpdate::TopicMeta {
+                        name,
+                        id: u64::MAX, // unknown; id unchanged
+                        data_type: None,
+                        persistent: update.get("persistent").and_then(|v| v.as_bool()),
+                        retained: update.get("retained").and_then(|v| v.as_bool()),
+                        type_str: None,
+                        struct_schema: update
+                            .get("structSchema")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
+                    })
+                    .ok();
             }
             other => {
                 debug_msg(log, &format!("ignore text method={}", other));
@@ -666,7 +693,10 @@ fn handle_mp(
         debug_msg(log, &format!("value for unknown topic id {}", id));
         return;
     };
-    debug_msg(log, &format!("value name={} dt={} val={:?}", name, dt, arr[3]));
+    debug_msg(
+        log,
+        &format!("value name={} dt={} val={:?}", name, dt, arr[3]),
+    );
     let Some(value) = nt_value(dt as u64, &arr[3]) else {
         debug_msg(log, &format!("undecodable value type {} for {}", dt, name));
         return;
@@ -701,9 +731,9 @@ fn nt_value(dt: u64, v: &Mv) -> Option<NtValue> {
             Mv::String(s) => s.as_str().map(|s| NtValue::Raw(s.as_bytes().to_vec())),
             _ => None,
         },
-        DT_BOOLEAN_ARRAY => v.as_array().map(|a| {
-            NtValue::BooleanArray(a.iter().filter_map(|x| x.as_bool()).collect())
-        }),
+        DT_BOOLEAN_ARRAY => v
+            .as_array()
+            .map(|a| NtValue::BooleanArray(a.iter().filter_map(|x| x.as_bool()).collect())),
         DT_DOUBLE_ARRAY | DT_FLOAT_ARRAY => v.as_array().map(|a| {
             NtValue::DoubleArray(
                 a.iter()
@@ -716,12 +746,14 @@ fn nt_value(dt: u64, v: &Mv) -> Option<NtValue> {
                     .collect(),
             )
         }),
-        DT_INT_ARRAY => v.as_array().map(|a| {
-            NtValue::IntArray(a.iter().filter_map(|x| x.as_i64()).collect())
-        }),
+        DT_INT_ARRAY => v
+            .as_array()
+            .map(|a| NtValue::IntArray(a.iter().filter_map(|x| x.as_i64()).collect())),
         DT_STRING_ARRAY => v.as_array().map(|a| {
             NtValue::StringArray(
-                a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
+                a.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect(),
             )
         }),
         _ => match v {

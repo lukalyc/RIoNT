@@ -5,6 +5,9 @@ mod nt;
 mod pose;
 mod ui;
 
+#[cfg(test)]
+mod tests_tui;
+
 use nt::{channel, command_channel, run_client, NtUpdate};
 
 use app::{App, UiAction};
@@ -19,14 +22,21 @@ use std::time::{Duration, Instant};
 
 /// CLI: `riont 9986` (team number) or `riont 172.22.11.2` (direct IP).
 #[derive(clap::Parser)]
-#[command(name = "riont", version, about = "RIONT — Robot Inspection Over Network Tables")]
+#[command(
+    name = "riont",
+    version,
+    about = "RIONT — Robot Inspection Over Network Tables"
+)]
 struct Cli {
     /// Team number, IP, or IP:port. Falls back to common tether addresses.
     target: Option<String>,
 }
 
 pub(crate) fn trace(msg: &str) {
-    if std::env::var("RIONT_TRACE").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("RIONT_TRACE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -45,9 +55,7 @@ fn resolve_target(arg: Option<String>) -> String {
         // (config.json), then the USB tether address.
         None => {
             let (config, _) = config::Config::load();
-            config
-                .last_target
-                .unwrap_or_else(|| "172.22.11.2".into())
+            config.last_target.unwrap_or_else(|| "172.22.11.2".into())
         }
     }
 }
@@ -71,11 +79,18 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
     let target = target.to_string();
     let (update_tx, mut update_rx) = channel();
     let (cmd_tx, cmd_rx) = command_channel();
-    let handle = tokio::spawn(run_client(target.clone(), update_tx, cmd_tx.clone(), cmd_rx));
+    let handle = tokio::spawn(run_client(
+        target.clone(),
+        update_tx,
+        cmd_tx.clone(),
+        cmd_rx,
+    ));
 
     // Headless test mode: fixed viewport, keystroke script on stdin, ANSI
     // render on stdout. No console APIs required.
-    let headless = std::env::var("RIONT_HEADLESS").map(|v| v == "1").unwrap_or(false);
+    let headless = std::env::var("RIONT_HEADLESS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
 
     let (mut terminal, mut key_rx, key_tx_closed) = if headless {
         let (w, h) = std::env::var("RIONT_SIZE")
@@ -103,7 +118,10 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
                 let Ok(line) = line else { break };
-                if let Some(ms) = line.strip_prefix("sleep:").and_then(|v| v.parse::<u64>().ok()) {
+                if let Some(ms) = line
+                    .strip_prefix("sleep:")
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
                     std::thread::sleep(Duration::from_millis(ms));
                     continue;
                 }
@@ -126,7 +144,10 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                                 "RIGHT" => KeyCode::Right,
                                 _ => KeyCode::Char(' '),
                             };
-                            if key_tx.send(KeyEvent::new(code, KeyModifiers::empty())).is_err() {
+                            if key_tx
+                                .send(KeyEvent::new(code, KeyModifiers::empty()))
+                                .is_err()
+                            {
                                 return;
                             }
                         }
@@ -174,7 +195,6 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
         });
         (terminal, key_rx, false)
     };
-
 
     let mut app = App::new(target.clone());
 

@@ -43,7 +43,13 @@ pub const BUILTIN_MAPS: [&str; 3] = ["2024-crescendo", "2025-reefscape", "2026-r
 /// are approximations pending official PathPlanner geometry.
 const CRESCENDO_WALLS: &[&[(f64, f64)]] = &[
     // Perimeter (exact).
-    &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
+    &[
+        (0.0, 0.0),
+        (16.54, 0.0),
+        (16.54, 8.21),
+        (0.0, 8.21),
+        (0.0, 0.0),
+    ],
     // Subwoofer: protrusion on the blue driver-station wall (approx).
     &[(0.0, 2.9), (1.2, 2.9), (1.2, 5.3), (0.0, 5.3)],
     // Amp: corner structure, blue-left (approx).
@@ -64,7 +70,13 @@ const CRESCENDO_WALLS: &[&[(f64, f64)]] = &[
 /// posts are approximations pending official PathPlanner geometry.
 const REEFSCAPE_WALLS: &[&[(f64, f64)]] = &[
     // Perimeter (exact).
-    &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
+    &[
+        (0.0, 0.0),
+        (16.54, 0.0),
+        (16.54, 8.21),
+        (0.0, 8.21),
+        (0.0, 0.0),
+    ],
     // Reef: hexagonal scoring structure at field center (approx).
     &[
         (8.27 + 1.10, 4.105),
@@ -85,9 +97,13 @@ const REEFSCAPE_WALLS: &[&[(f64, f64)]] = &[
 /// 2026 season: the official map ships as fields/2026-rebuilt.json
 /// (generated from Choreo's vector drawing by scripts/fetch_field.py).
 /// This perimeter-only const is the fallback when that file is absent.
-const TBA_2026_WALLS: &[&[(f64, f64)]] = &[
-    &[(0.0, 0.0), (16.54, 0.0), (16.54, 8.21), (0.0, 8.21), (0.0, 0.0)],
-];
+const TBA_2026_WALLS: &[&[(f64, f64)]] = &[&[
+    (0.0, 0.0),
+    (16.54, 0.0),
+    (16.54, 8.21),
+    (0.0, 8.21),
+    (0.0, 0.0),
+]];
 
 /// PathPlanner-style field JSON:
 /// `{ "game": "...", "fieldLength": m, "fieldWidth": m,
@@ -149,11 +165,11 @@ impl FieldMap {
             .into_iter()
             .map(|poly| poly.into_iter().map(|p| (p[0], p[1])).collect())
             .collect();
-        if walls.iter().chain(marks.iter()).any(|p| {
-            p.is_empty()
-                || p.iter()
-                    .any(|(x, y)| !x.is_finite() || !y.is_finite())
-        }) {
+        if walls
+            .iter()
+            .chain(marks.iter())
+            .any(|p| p.is_empty() || p.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()))
+        {
             return Err("field json: non-finite wall coordinates".into());
         }
         Ok(FieldMap {
@@ -256,12 +272,7 @@ pub fn wall_kind(bbox: (f64, f64, f64, f64), length: f64, width: f64) -> WallKin
 /// preserving field aspect on the braille dot grid. On standard 1:2
 /// character cells the braille grid is square in dot-space, so the drawn
 /// x-span/y-span ratio must equal `cols / (2 * rows)`.
-pub fn fit_bounds(
-    cols: usize,
-    rows: usize,
-    length: f64,
-    width: f64,
-) -> ((f64, f64), (f64, f64)) {
+pub fn fit_bounds(cols: usize, rows: usize, length: f64, width: f64) -> ((f64, f64), (f64, f64)) {
     let grid_aspect = (cols.max(1) as f64) / (2.0 * rows.max(1) as f64);
     let mut x_span = length;
     let mut y_span = length / grid_aspect;
@@ -284,12 +295,14 @@ mod tests {
 
     #[test]
     fn forced_reading_accepts_double6_and_pose2d() {
-        let p = forced_reading(&NtValue::DoubleArray(vec![
-            1.0, 2.0, 0.0, 0.0, 0.0, 90.0,
-        ]))
-        .unwrap();
+        let p = forced_reading(&NtValue::DoubleArray(vec![1.0, 2.0, 0.0, 0.0, 0.0, 90.0])).unwrap();
         assert!((p.radians - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
-        let p = forced_reading(&NtValue::Pose2d { x: 3.0, y: 4.0, radians: 0.5 }).unwrap();
+        let p = forced_reading(&NtValue::Pose2d {
+            x: 3.0,
+            y: 4.0,
+            radians: 0.5,
+        })
+        .unwrap();
         assert_eq!((p.x, p.y), (3.0, 4.0));
     }
 
@@ -345,7 +358,11 @@ mod tests {
     #[test]
     fn json_rejects_garbage() {
         assert!(FieldMap::from_json("not json", "f").is_err());
-        assert!(FieldMap::from_json(r#"{"fieldLength": 0.0, "fieldWidth": 8.21, "walls": [[[0,0],[1,1]]]}"#, "f").is_err());
+        assert!(FieldMap::from_json(
+            r#"{"fieldLength": 0.0, "fieldWidth": 8.21, "walls": [[[0,0],[1,1]]]}"#,
+            "f"
+        )
+        .is_err());
         assert!(FieldMap::from_json(r#"{"fieldLength": 16.54, "fieldWidth": 8.21}"#, "f").is_err());
         assert!(FieldMap::from_json(
             r#"{"fieldLength": 16.54, "fieldWidth": 8.21, "walls": [[[0,0],[NaN,1]]]}"#,

@@ -3,8 +3,8 @@ import codecs, json, os, subprocess, sys, threading, time, socket
 
 import pyte
 
-ROOT = r"C:\Users\lryam\Documents\robonauts\software\nt-tui"
-EXE = os.path.join(ROOT, "target", "debug", "riont.exe")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EXE = os.path.join(ROOT, "target", "debug", "riont.exe" if os.name == "nt" else "riont")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

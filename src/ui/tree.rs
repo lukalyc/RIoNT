@@ -38,7 +38,13 @@ fn insert_topic(root: &mut Node, topic: &str) {
     node.topics.push(parts[parts.len() - 1].to_string());
 }
 
-fn walk(node: &Node, prefix: &str, depth: usize, expanded: &HashSet<String>, out: &mut Vec<TreeRow>) {
+fn walk(
+    node: &Node,
+    prefix: &str,
+    depth: usize,
+    expanded: &HashSet<String>,
+    out: &mut Vec<TreeRow>,
+) {
     for (name, child) in &node.dirs {
         let path = if prefix.is_empty() {
             name.clone()

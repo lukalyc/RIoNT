@@ -17,8 +17,8 @@ use crate::app::{App, Focus, MatrixSource, Mode};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
     symbols::Marker,
+    text::{Line, Span},
     widgets::canvas::{Canvas, Line as CanvasLine, Points},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -139,7 +139,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 // ---------------------------------------------------------------------------
 
 fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
-    let ip = app.target.split(':').next().unwrap_or(&app.target).to_string();
+    let ip = app
+        .target
+        .split(':')
+        .next()
+        .unwrap_or(&app.target)
+        .to_string();
     // Flash the reconnecting indicator at ~2 Hz (amber = retry loop).
     let blink_on = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -155,7 +160,9 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     let comm = if app.connected {
         Span::styled(
             format!("ONLINE ({})", ip),
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )
     } else if app.retry_attempt > 0 {
         // Retry loop: keyword whole (never ellipsized), attempt count and
@@ -168,12 +175,18 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     } else if !reason.is_empty() {
         // Just dropped, retry counter not yet ticking: the red state the
         // README promises, finally reachable — and carrying the cause.
-        Span::styled("DISCONNECTED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "DISCONNECTED",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
     } else if app.connecting {
         // First connect: no reason yet, no attempt — plain amber.
         Span::styled("RECONNECTING...", amber_style)
     } else {
-        Span::styled("DISCONNECTED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "DISCONNECTED",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
     };
     // Attempt count + humanized reason ride along dim, after the keyword.
     let comm = if !app.connected && !reason.is_empty() {
@@ -181,7 +194,13 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
             (_, 0) => format!(" — {}", reason),
             (_, n) => format!(" (attempt {} — {})", n, reason),
         };
-        vec![comm, dim(ellipsize_left(&detail, (area.width as usize).saturating_sub(60).clamp(12, 40)))]
+        vec![
+            comm,
+            dim(ellipsize_left(
+                &detail,
+                (area.width as usize).saturating_sub(60).clamp(12, 40),
+            )),
+        ]
     } else {
         vec![comm]
     };
@@ -189,7 +208,9 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     let code = match app.code_running() {
         Some(true) => Span::styled(
             "RUNNING",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
         Some(false) => Span::styled(
             "STOPPED",
@@ -233,7 +254,12 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn fmt_hms(total_secs: u64) -> String {
-    format!("{:02}:{:02}:{:02}", total_secs / 3600, (total_secs / 60) % 60, total_secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        total_secs / 3600,
+        (total_secs / 60) % 60,
+        total_secs % 60
+    )
 }
 
 /// Humanize a raw disconnect reason into a short HUD label. The full
@@ -254,7 +280,8 @@ fn short_reason(reason: &str) -> String {
         "host unreachable"
     } else if r.contains("10054") || r.contains("reset") {
         "connection reset"
-    } else if r.contains("10051") || r.contains("network down") || r.contains("unreachable network") {
+    } else if r.contains("10051") || r.contains("network down") || r.contains("unreachable network")
+    {
         "network down"
     } else if r.contains("10049") || r.contains("not valid") && r.contains("address") {
         "bad address"
@@ -354,7 +381,10 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
                 // subtree (glob) pin — so the tree shows inherited pins too
                 // and Space/x on them is never a surprise.
                 let star = if pinned.contains(&row.path) {
-                    Span::styled("* ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        "* ",
+                        Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+                    )
                 } else if globbed.contains(&row.path) {
                     Span::styled("* ", Style::default().fg(MUTED))
                 } else {
@@ -443,8 +473,7 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
             None => (String::new(), false),
         }
     } else {
-        app.cursor_path()
-            .unwrap_or_else(|| (String::new(), false))
+        app.cursor_path().unwrap_or_else(|| (String::new(), false))
     };
 
     let mut lines: Vec<Line> = Vec::new();
@@ -491,7 +520,10 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
             .as_ref()
             .map(|v| v.format())
             .unwrap_or_else(|| "-".into());
-        lines.push(Line::from(vec![dim("Value: "), plain(ellipsize_left(&val, w.saturating_sub(8)))]));
+        lines.push(Line::from(vec![
+            dim("Value: "),
+            plain(ellipsize_left(&val, w.saturating_sub(8))),
+        ]));
     }
 
     f.render_widget(Paragraph::new(lines), inner);
@@ -535,7 +567,9 @@ fn value_lines(v: &crate::nt::store::NtValue, width: usize) -> Vec<Line<'static>
         V::Boolean(b) => {
             let s = if *b { "[ TRUE ]" } else { "[ FALSE ]" };
             let style = if *b {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Rgb(0xB8, 0x4A, 0x3A))
             };
@@ -574,7 +608,7 @@ fn value_lines(v: &crate::nt::store::NtValue, width: usize) -> Vec<Line<'static>
                 } else {
                     format!(", {}", e)
                 };
-                if line1.chars().count() + piece.chars().count() + 1 <= w {
+                if line1.chars().count() + piece.chars().count() < w {
                     line1.push_str(&piece);
                 } else {
                     rest.push(e.clone());
@@ -655,7 +689,7 @@ fn array_elements(v: &crate::nt::store::NtValue) -> Vec<String> {
         V::BooleanArray(a) => a.iter().map(|b| b.to_string()).collect(),
         V::DoubleArray(a) => a.iter().map(|f| format!("{:.3}", f)).collect(),
         V::IntArray(a) => a.iter().map(|i| i.to_string()).collect(),
-        V::StringArray(a) => a.iter().map(|s| s.clone()).collect(),
+        V::StringArray(a) => a.clone(),
         _ => Vec::new(),
     }
 }
@@ -768,7 +802,9 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
                 plain("Space"),
                 dim(" to pin it"),
             ]),
-            Line::from(dim("directories pin their whole subtree; presets load with 1-9")),
+            Line::from(dim(
+                "directories pin their whole subtree; presets load with 1-9",
+            )),
         ];
         f.render_widget(Paragraph::new(lines), inner);
         return;
@@ -815,7 +851,12 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
             if y + h > inner.y + inner.height {
                 break; // column full (over-wide tail): clipped until scrolled
             }
-            let rect = Rect { x, y, width: w, height: h };
+            let rect = Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            };
             render_card(f, app, &cells, idx, rect, focused);
             y += h;
         }
@@ -862,7 +903,10 @@ fn render_card(f: &mut Frame, app: &App, cells: &[String], idx: usize, rect: Rec
         .and_then(|t| t.hz())
         .map(|h| format!("{:.1} Hz", h))
         .unwrap_or_else(|| "--".into());
-    let age = td.and_then(|t| t.age_secs()).map(fmt_delta).unwrap_or_else(|| "--".into());
+    let age = td
+        .and_then(|t| t.age_secs())
+        .map(fmt_delta)
+        .unwrap_or_else(|| "--".into());
     lines.push(Line::from(vec![
         muted(ty),
         muted("  "),
@@ -957,8 +1001,15 @@ fn render_field_card(
         let meta_h = 1u16.min(inner.height);
         let canvas_h = inner.height.saturating_sub(meta_h);
         (
-            Rect { height: canvas_h, ..inner },
-            Rect { y: inner.y + canvas_h, height: meta_h, ..inner },
+            Rect {
+                height: canvas_h,
+                ..inner
+            },
+            Rect {
+                y: inner.y + canvas_h,
+                height: meta_h,
+                ..inner
+            },
         )
     };
     paint_field_canvas(f, canvas_area, app, members);
@@ -1100,7 +1151,10 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
                     .map(|t| t.iter().map(|(x, y, _)| (fx(*x), *y)).collect())
                     .unwrap_or_default();
                 if !trail.is_empty() {
-                    ctx.draw(&Points { coords: &trail, color: m.trail });
+                    ctx.draw(&Points {
+                        coords: &trail,
+                        color: m.trail,
+                    });
                 }
             }
             for m in members {
@@ -1125,7 +1179,10 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
                             color: m.color,
                         });
                     }
-                    ctx.draw(&Points { coords: &[robot], color: m.color });
+                    ctx.draw(&Points {
+                        coords: &[robot],
+                        color: m.color,
+                    });
                 }
             }
         });
@@ -1166,7 +1223,10 @@ fn draw_field_view(f: &mut Frame, app: &App) {
     // Bottom rows: one legend/readout line per member + a close hint.
     let legend_h = (members.len() as u16 + 1).clamp(2, 6).min(inner.height);
     let canvas_h = inner.height.saturating_sub(legend_h);
-    let canvas_area = Rect { height: canvas_h, ..inner };
+    let canvas_area = Rect {
+        height: canvas_h,
+        ..inner
+    };
     let value_area = Rect {
         y: inner.y + canvas_h,
         height: legend_h,
@@ -1188,7 +1248,12 @@ fn draw_field_view(f: &mut Frame, app: &App) {
                 lines.push(Line::from(vec![
                     dot,
                     plain(format!("{}  ", m.topic)),
-                    bold(format!("x: {:.2} m  y: {:.2} m  theta: {:.1}", dx, r.y, r.radians.to_degrees())),
+                    bold(format!(
+                        "x: {:.2} m  y: {:.2} m  theta: {:.1}",
+                        dx,
+                        r.y,
+                        r.radians.to_degrees()
+                    )),
                 ]));
             }
             None => {
@@ -1200,7 +1265,9 @@ fn draw_field_view(f: &mut Frame, app: &App) {
             }
         }
     }
-    lines.push(Line::from(dim("                                                                 f/Esc close")));
+    lines.push(Line::from(dim(
+        "                                                                 f/Esc close",
+    )));
     f.render_widget(Paragraph::new(lines), value_area);
 }
 
@@ -1242,7 +1309,10 @@ fn draw_search(f: &mut Frame, app: &App) {
     let title = if pinned_n == 0 {
         " search — space/tab pin · enter jump · esc close ".to_string()
     } else {
-        format!(" search — {} pinned · space/tab pin · enter jump · esc close ", pinned_n)
+        format!(
+            " search — {} pinned · space/tab pin · enter jump · esc close ",
+            pinned_n
+        )
     };
     let mut lines: Vec<Line> = vec![Line::from(vec![plain("/"), bold(app.query.clone())])];
     // Never a silent blank box (the palette shows "no matching commands";
@@ -1266,7 +1336,10 @@ fn draw_search(f: &mut Frame, app: &App) {
     {
         let row = start + i;
         let mark = if app.is_pinned(name) {
-            Span::styled("* ", Style::default().fg(AMBER).add_modifier(Modifier::BOLD))
+            Span::styled(
+                "* ",
+                Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            )
         } else {
             plain("  ")
         };
@@ -1325,10 +1398,9 @@ fn draw_edit(f: &mut Frame, app: &App) {
     if let Some(e) = &app.edit_error {
         lines.push(Line::from(err(e.clone())));
     }
-    let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        " set value ",
-        Style::default().fg(AMBER),
-    ));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" set value ", Style::default().fg(AMBER)));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     f.render_widget(Paragraph::new(lines), inner);
@@ -1367,9 +1439,7 @@ fn draw_connect(f: &mut Frame, app: &App) {
         ]));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(dim(
-        "[Enter] Connect   [Arrows] Select   [Esc]",
-    )));
+    lines.push(Line::from(dim("[Enter] Connect   [Arrows] Select   [Esc]")));
 
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         " [CONNECT TARGET] ",
@@ -1402,10 +1472,7 @@ fn draw_prompt(f: &mut Frame, app: &App) {
     if let Some(e) = &app.prompt_error {
         spans.push(err(format!("  {}", e)));
     }
-    let lines = vec![
-        Line::from(spans),
-        Line::from(dim("enter=save  esc=cancel")),
-    ];
+    let lines = vec![Line::from(spans), Line::from(dim("enter=save  esc=cancel"))];
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         title,
         Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
@@ -1471,7 +1538,9 @@ fn draw_pick_preset(f: &mut Frame, app: &App) {
         ]));
     }
     lines.push(Line::from(dim("[Enter] Load   [1-9] Quick Load   [Esc]")));
-    let block = Block::default().borders(Borders::ALL).title(" [LOAD PRESET] ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" [LOAD PRESET] ");
     let inner = block.inner(area);
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(lines), inner);
@@ -1530,7 +1599,7 @@ fn draw_settings_view(f: &mut Frame, app: &App) {
 
 fn draw_palette(f: &mut Frame, app: &App) {
     let matches = &app.palette_matches;
-    let h = (matches.len() as u16 + 3).min(12).max(4);
+    let h = (matches.len() as u16 + 3).clamp(4, 12);
     let area = centered_rect(f.area(), 55, h);
     f.render_widget(Clear, area);
 
@@ -1595,7 +1664,9 @@ fn draw_toasts(f: &mut Frame, app: &App) {
         // Clamp to the terminal width (never skip rendering on narrow
         // terms) and ellipsize to the inner width so long failure reasons
         // terminate visibly instead of hard-clipping mid-word.
-        let w = ((text.chars().count() as u16) + 4).clamp(12, 60).min(root.width);
+        let w = ((text.chars().count() as u16) + 4)
+            .clamp(12, 60)
+            .min(root.width);
         let h = 3u16;
         if bottom < h {
             break;

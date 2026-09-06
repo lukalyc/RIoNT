@@ -5,6 +5,36 @@ All notable changes to RIONT are documented here. The format follows
 [Semantic Versioning](https://semver.org/). See `AGENTS.md` for the bump
 procedure — every version bump must include a changelog entry.
 
+## [0.6.0] - 2026-09-06
+
+### Added
+
+- `RIONT_CONFIG` environment variable: run RIONT against an alternate
+  `config.json` path — hermetic test runs and portable installs. The
+  end-to-end harness uses it so tests never touch your real config.
+
+### Changed
+
+- Test pyramid overhaul (for agents and humans):
+  - 42 new in-process Rust tests (`cargo test`, src/tests_tui.rs) render
+    the real UI into a TestBackend and assert on keystrokes → state →
+    buffer in milliseconds — no subprocess, no network, no sleeps.
+  - `test/harness.py` rewritten as a contract harness: every check now
+    synchronizes by polling for the expected state (no fixed sleeps),
+    asserts on cross-process contracts (server-received values, HUD state
+    transitions, config side effects) instead of exact UI wording, and
+    fails fast with a full-screen dump on the first failure. A full run
+    dropped from minutes to ~11 s and no longer breaks when UI copy is
+    reworded.
+
+## [0.5.4] - 2026-09-06
+
+### Added
+
+- `version-release` agent skill (`.agents/skills/version-release/`) — a
+  step-by-step walkthrough of the versioning procedure; AGENTS.md remains
+  the policy source.
+
 ## [0.5.3] - 2026-09-05
 
 ### Changed
