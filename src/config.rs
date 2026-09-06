@@ -8,13 +8,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Test-only config redirect: THREAD-LOCAL, so every test thread gets its
-/// own scratch file — parallel `cargo test` threads never share (and never
-/// race on) a config file. Set per-thread by `tests_tui::hermetic_config`.
+// Test-only config redirect: THREAD-LOCAL, so every test thread gets its
+// own scratch file — parallel `cargo test` threads never share (and never
+// race on) a config file. Set per-thread by `tests_tui::hermetic_config`.
 #[cfg(test)]
 thread_local! {
     static TEST_PATH: std::cell::RefCell<Option<std::path::PathBuf>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
