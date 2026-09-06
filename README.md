@@ -62,6 +62,10 @@ season map:
 
 ![RIONT enlarged field view](docs/screenshot-field.png)
 
+Command palette (`:`) — a fuzzy action runner over every command:
+
+![RIONT command palette](docs/screenshot-palette.png)
+
 ## Field visualization
 
 A pinned topic whose value is a robot pose renders as a braille top-down

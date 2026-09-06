@@ -10,9 +10,10 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Added
 
-- Screenshots in the README (connected session + enlarged field view),
-  with `scripts/screenshot.py` to regenerate them; `CONTRIBUTING.md`
-  now holds the build/architecture/protocol/testing details.
+- Screenshots in the README (connected session, enlarged field view,
+  command palette), with `scripts/screenshot.py` to regenerate them;
+  `CONTRIBUTING.md` now holds the build/architecture/protocol/testing
+  details.
 
 ### Changed
 
