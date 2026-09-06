@@ -26,20 +26,17 @@ use crate::nt::store::NtValue;
 use crate::nt::ClientCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
-use std::sync::Once;
 
-static HERMETIC_CONFIG: Once = Once::new();
-
-/// Redirect `Config::path()` to a scratch dir so pin/save paths in tests
-/// cannot clobber the developer's `~/.config/riont/config.json`. Uses the
-/// cfg(test) OnceLock in config.rs — no process-env mutation, so parallel
-/// test threads are safe.
+/// Redirect THIS test thread's `Config::path()` to a private scratch dir.
+/// Thread-local (see `Config::set_test_path`): parallel test threads never
+/// share or race on a config file, and the host's `~/.config/riont` is
+/// never touched.
 fn hermetic_config() {
-    HERMETIC_CONFIG.call_once(|| {
-        let dir = std::env::temp_dir().join("riont-test-config");
-        let _ = std::fs::create_dir_all(&dir);
-        crate::config::set_test_path(dir.join("config.json"));
-    });
+    let thread_dir = std::env::temp_dir()
+        .join("riont-test-config")
+        .join(format!("{:?}", std::thread::current().id()));
+    std::fs::create_dir_all(&thread_dir).expect("scratch config dir");
+    crate::config::set_test_path(thread_dir.join("config.json"));
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -322,6 +319,10 @@ fn watchlist_save_persists_to_riont_config_not_the_user_file() {
     t.connect();
     t.feed_battery();
     t.pin_via_search("batt");
+    assert!(
+        t.app.is_pinned("SmartDashboard/Battery Voltage"),
+        "pin must succeed before persistence is checked"
+    );
     let path = crate::config::Config::path();
     assert!(path.starts_with(std::env::temp_dir()), "{path:?}");
     let txt = std::fs::read_to_string(&path).expect("config written");

@@ -8,15 +8,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Test-only config redirect, set exactly once by `tests_tui` before any
-/// test constructs an App. A `OnceLock` (not env mutation) keeps parallel
-/// test threads safe.
+/// Test-only config redirect: THREAD-LOCAL, so every test thread gets its
+/// own scratch file — parallel `cargo test` threads never share (and never
+/// race on) a config file. Set per-thread by `tests_tui::hermetic_config`.
 #[cfg(test)]
-static TEST_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+thread_local! {
+    static TEST_PATH: std::cell::RefCell<Option<std::path::PathBuf>> =
+        std::cell::RefCell::new(None);
+}
 
 #[cfg(test)]
 pub(crate) fn set_test_path(p: std::path::PathBuf) {
-    let _ = TEST_PATH.set(p);
+    TEST_PATH.with(|slot| *slot.borrow_mut() = Some(p));
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -140,14 +143,16 @@ impl Config {
     }
 
     /// `~/.config/riont/config.json`, or the path in `RIONT_CONFIG` when
-    /// set (hermetic runs, portable installs). Under `cfg(test)` a
-    /// once-initialized scratch path wins over everything so parallel
-    /// test threads can never read or write the host config (see
+    /// set (hermetic runs, portable installs). Under `cfg(test)` the
+    /// thread-local scratch path wins over everything (see
     /// `Config::set_test_path`).
     pub fn path() -> PathBuf {
         #[cfg(test)]
-        if let Some(p) = TEST_PATH.get() {
-            return p.clone();
+        {
+            let override_path = TEST_PATH.with(|slot| slot.borrow().clone());
+            if let Some(p) = override_path {
+                return p;
+            }
         }
         if let Ok(p) = std::env::var("RIONT_CONFIG") {
             if !p.is_empty() {
