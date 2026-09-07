@@ -151,7 +151,9 @@ fn hex(b: &[u8]) -> String {
 /// A publish whose value frame may need retransmission (the server drops
 /// the first value frame for a freshly-published topic).
 struct Pending {
-    frame: Vec<u8>,
+    topic: String,
+    value: NtValue,
+    pubuid: u64,
     last_sent: Instant,
     tries: u32,
 }
@@ -403,10 +405,29 @@ async fn session(
                 // Retransmit value frames for unconfirmed publishes: the
                 // server drops the first one for a fresh pubuid.
                 if !pending.is_empty() {
+                    // Re-encode on EVERY attempt: a frame first sent before
+                    // clock sync carries ts=0, which ntcore servers drop.
+                    // Once the echo lands (within ms of connect), the next
+                    // attempt carries a real timestamp and the write lands.
+                    let ts = if clock_synced {
+                        (local_us() as f64 + clock_offset_us) as i64
+                    } else {
+                        0
+                    };
                     let mut resend: Vec<(usize, Vec<u8>)> = Vec::new();
                     for (i, p) in pending.iter().enumerate() {
                         if p.tries < 3 && p.last_sent.elapsed() >= Duration::from_millis(300) {
-                            resend.push((i, p.frame.clone()));
+                            let (_, dt, mv) = to_msgpack(&p.value);
+                            let val_msg = vec![
+                                Mv::Integer(p.pubuid.into()),
+                                Mv::Integer(ts.into()),
+                                Mv::Integer(dt.into()),
+                                mv,
+                            ];
+                            let mut bin = Vec::new();
+                            if write_value(&mut bin, &Mv::Array(val_msg)).is_ok() {
+                                resend.push((i, bin));
+                            }
                         }
                     }
                     for (i, frame) in resend {
@@ -459,12 +480,12 @@ async fn session(
                             Mv::Integer(pubuid.into()),
                             Mv::Integer(ts.into()),
                             Mv::Integer(dt.into()),
-                            mv,
+                            mv.clone(),
                         ];
                         let mut bin = Vec::new();
                         let ok = write_value(&mut bin, &Mv::Array(val_msg)).is_ok();
                         debug_msg(&mut debug_log, &format!(
-                            "publish {} = {:?} json={} bin_hex={}",
+                            "publish {} = {:?} ts={ts} json={} bin_hex={}",
                             topic,
                             value,
                             publish,
@@ -472,10 +493,12 @@ async fn session(
                         ));
                         if sink.send(WsMessage::Text(publish.to_string())).await.is_ok()
                             && ok
-                            && sink.send(WsMessage::Binary(bin.clone())).await.is_ok()
+                            && sink.send(WsMessage::Binary(bin)).await.is_ok()
                         {
                             pending.push(Pending {
-                                frame: bin,
+                                topic,
+                                value: value.clone(),
+                                pubuid,
                                 last_sent: Instant::now(),
                                 tries: 1,
                             });

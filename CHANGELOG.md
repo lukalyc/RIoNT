@@ -13,8 +13,13 @@ it by `scripts/release.sh` when the batch is ready to ship.
 ### Fixed
 
 - **NT4 engine: writes within the first second after connecting were
-  silently dropped.** A publish before clock sync carries timestamp 0,
-  which ntcore servers ignore — the client then reported "no
+  silently dropped.** Two compounding causes: a publish before clock
+  sync carries timestamp 0, which ntcore servers ignore — and the
+  publish retransmission resent the same pre-encoded ts=0 frame, so the
+  write never landed no matter how long the client stayed connected.
+  The engine now requests clock sync immediately at connect AND
+  re-encodes each retransmission with the current timestamp, so a write
+  lands as soon as sync completes (milliseconds). Previously: — the client then reported "no
   round-trip; robot did not confirm". The engine now requests clock
   sync immediately at connect, so every publish carries a real
   timestamp.
