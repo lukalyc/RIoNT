@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-07
+
 ### Fixed
 
 - **NT4 engine: publish retransmissions now re-encode with the current
