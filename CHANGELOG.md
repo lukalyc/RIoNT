@@ -13,6 +13,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 ### Fixed
 
 - **NT4 engine: publishes are now robust against connect-time races.**
+  Includes: the debug log now appends across sessions (reconnects no
+  longer wipe the log) and the session end reason is recorded.
   A lost publish *declare* was never re-sent, so every value frame from
   an undeclared publisher was dropped by the server regardless of
   timestamp. Retransmissions now re-declare the publisher alongside
@@ -23,6 +25,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 ### Fixed
 
 - **NT4 engine: publishes are now robust against connect-time races.**
+  Includes: the debug log now appends across sessions (reconnects no
+  longer wipe the log) and the session end reason is recorded.
   Three compounding drop causes fixed: publishes before clock sync
   carried timestamp 0 (servers drop those); retransmissions resent the
   same frozen frame forever; and a lost publish *declare* was never

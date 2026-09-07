@@ -124,7 +124,12 @@ fn open_debug_log() -> DebugLog {
         .map(|v| v == "1")
         .unwrap_or(false)
     {
-        std::fs::File::create("riont-debug.log")
+        // Append: sessions reconnect (retarget, backoff) and truncating
+        // here wipes the previous session's history mid-investigation.
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("riont-debug.log")
             .ok()
             .map(std::io::BufWriter::new)
     } else {
@@ -183,6 +188,10 @@ pub async fn run_client(
     // connected — a fresh drop after a live link is new information). The
     // HUD keeps the persistent surface (reason + attempt count).
     let mut last_reason: Option<String> = None;
+    // Pubuids NEVER reset across sessions: the server remembers
+    // (client name, pubuid) publishers across reconnects, and a
+    // re-publish with a stale pubuid is ignored as a duplicate.
+    let mut next_pubuid: u64 = 1;
     loop {
         updates
             .send(NtUpdate::Connecting {
@@ -190,7 +199,17 @@ pub async fn run_client(
                 attempt,
             })
             .ok();
-        let outcome = session(&target, &updates, &mut commands, &commands_tx, &retarget_to).await;
+        let outcome = session(
+            &target,
+            &updates,
+            &mut commands,
+            &commands_tx,
+            &retarget_to,
+            &mut next_pubuid,
+        )
+        .await;
+        let mut backoff_log = open_debug_log();
+        debug_msg(&mut backoff_log, &format!("session ended: {:?}", outcome));
         // Ok = the session got connected before dying; Err = it never did
         // (connect-phase failure). The reason string is the same either way.
         let (reason, had_connected) = match outcome {
@@ -244,6 +263,7 @@ async fn session(
     commands: &mut UnboundedReceiver<ClientCommand>,
     commands_tx: &UnboundedSender<ClientCommand>,
     retarget_to: &Arc<Mutex<Option<String>>>,
+    next_pubuid: &mut u64,
 ) -> Result<String, String> {
     let mut debug_log = open_debug_log();
     debug_msg(&mut debug_log, &format!("session start: {}", target));
@@ -263,22 +283,32 @@ async fn session(
     // timeout (~20s on Windows) and a Retarget typed meanwhile sits queued,
     // making the UI look permanently stuck.
     let connect_fut = tokio_tungstenite::connect_async(request);
-    let (ws, _resp) = tokio::select! {
-        res = connect_fut => res.map_err(|e| format!("connect: {}", e))?,
-        _ = tokio::time::sleep(Duration::from_secs(5)) => {
-            return Err("connect timeout".into());
+    tokio::pin!(connect_fut);
+    // Publishes arriving during the handshake are BUFFERED and flushed
+    // once the session is up. Aborting the handshake on a Publish
+    // livelocked the client: the re-queued publish was the first command
+    // the next connect-phase saw, interrupting it again, forever.
+    let mut queued_publishes: Vec<ClientCommand> = Vec::new();
+    let (ws, _resp) = loop {
+        tokio::select! {
+            res = &mut connect_fut => {
+                break res.map_err(|e| format!("connect: {}", e))?;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                return Err("connect timeout".into());
+            }
+            Some(cmd) = commands.recv() => match cmd {
+                ClientCommand::Reconnect => return Err("reconnect requested".into()),
+                ClientCommand::Retarget(t) => {
+                    *retarget_to.lock().unwrap() = Some(t);
+                    return Err("retarget".into());
+                }
+                pub_cmd @ ClientCommand::Publish { .. } => {
+                    queued_publishes.push(pub_cmd);
+                }
+                _ => {}
+            },
         }
-        Some(cmd) = commands.recv() => match cmd {
-            ClientCommand::Reconnect => return Err("reconnect requested".into()),
-            ClientCommand::Retarget(t) => {
-                *retarget_to.lock().unwrap() = Some(t);
-                return Err("retarget".into());
-            }
-            pub_cmd @ ClientCommand::Publish { .. } => {
-                commands_tx.send(pub_cmd).ok();
-                return Err("connect interrupted".into());
-            }
-        },
     };
     let (mut sink, mut stream) = ws.split();
     debug_msg(&mut debug_log, "ws connected");
@@ -311,11 +341,9 @@ async fn session(
             server_info: "NT4 server".into(),
         })
         .ok();
-
     // topic id -> name (assigned by announce messages)
     let mut topic_by_id: HashMap<u64, String> = HashMap::new();
     let mut buf_values: Vec<(String, NtValue, u64)> = Vec::new();
-    let mut next_pubuid: u64 = 1;
     // Timers MUST be created once and ticked inside the select: recreating a
     // sleep future per loop iteration means a busy socket (one frame per
     // value, several hundred/s on a real robot) never lets the 50 ms sleep
@@ -353,6 +381,48 @@ async fn session(
     // Confirmed when the server's `announce` for our publish arrives (it
     // echoes our pubuid, proving the publisher binding is live).
     let mut pending: Vec<Pending> = Vec::new();
+    // Flush publishes buffered during the connect phase: the robot gets
+    // every queued write, in order, now that the session is up.
+    for cmd in queued_publishes.drain(..) {
+        if let ClientCommand::Publish { topic, value } = cmd {
+            let pubuid = *next_pubuid;
+            *next_pubuid += 1;
+            let (type_str, dt, mv) = to_msgpack(&value);
+            let wire_topic = if topic.starts_with('/') {
+                topic.clone()
+            } else {
+                format!("/{}", topic)
+            };
+            let publish = json!([{
+                "method": "publish",
+                "params": {
+                    "name": wire_topic,
+                    "pubuid": pubuid,
+                    "type": type_str,
+                    "properties": {}
+                }
+            }]);
+            sink.send(WsMessage::Text(publish.to_string())).await.ok();
+            let val_msg = vec![
+                Mv::Integer(pubuid.into()),
+                Mv::Integer(0.into()), // pre-sync: server assigns time
+                Mv::Integer(dt.into()),
+                mv,
+            ];
+            let mut bin = Vec::new();
+            if write_value(&mut bin, &Mv::Array(val_msg)).is_ok()
+                && sink.send(WsMessage::Binary(bin)).await.is_ok()
+            {
+                pending.push(Pending {
+                    declare: publish.to_string(),
+                    value,
+                    pubuid,
+                    last_sent: Instant::now(),
+                    tries: 1,
+                });
+            }
+        }
+    }
 
     let reason = loop {
         tokio::select! {
@@ -441,9 +511,18 @@ async fn session(
                         .map(|(i, p)| (i, p.declare.clone()))
                         .collect();
                     for (i, declare) in declares {
+                        debug_msg(&mut debug_log, &format!(
+                            "retransmit declare [{}] {}",
+                            i, declare
+                        ));
                         sink.send(WsMessage::Text(declare)).await.ok();
                     }
                     for (i, frame) in resend {
+                        debug_msg(&mut debug_log, &format!(
+                            "retransmit value [{}] bin_hex={}",
+                            i,
+                            hex(&frame)
+                        ));
                         if sink.send(WsMessage::Binary(frame)).await.is_ok() {
                             pending[i].tries += 1;
                             pending[i].last_sent = Instant::now();
@@ -469,8 +548,8 @@ async fn session(
                         } else {
                             format!("/{}", topic)
                         };
-                        let pubuid = next_pubuid;
-                        next_pubuid += 1;
+                        let pubuid = *next_pubuid;
+                        *next_pubuid += 1;
                         let (type_str, dt, mv) = to_msgpack(&value);
                         // 1) declare the publisher (also creates the topic)
                         let publish = json!([{
