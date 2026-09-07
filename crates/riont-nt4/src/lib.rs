@@ -151,7 +151,11 @@ fn hex(b: &[u8]) -> String {
 /// A publish whose value frame may need retransmission (the server drops
 /// the first value frame for a freshly-published topic).
 struct Pending {
-    topic: String,
+    /// The `publish` control frame (declare), re-sent with every value
+    /// retransmission: right after a retarget/reconnect, the declare can
+    /// itself be lost — and a value from an undeclared publisher is
+    /// dropped by the server, always.
+    declare: String,
     value: NtValue,
     pubuid: u64,
     last_sent: Instant,
@@ -430,6 +434,15 @@ async fn session(
                             }
                         }
                     }
+                    let declares: Vec<(usize, String)> = pending
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| resend.iter().any(|(ri, _)| ri == i))
+                        .map(|(i, p)| (i, p.declare.clone()))
+                        .collect();
+                    for (i, declare) in declares {
+                        sink.send(WsMessage::Text(declare)).await.ok();
+                    }
                     for (i, frame) in resend {
                         if sink.send(WsMessage::Binary(frame)).await.is_ok() {
                             pending[i].tries += 1;
@@ -496,7 +509,7 @@ async fn session(
                             && sink.send(WsMessage::Binary(bin)).await.is_ok()
                         {
                             pending.push(Pending {
-                                topic,
+                                declare: publish.to_string(),
                                 value: value.clone(),
                                 pubuid,
                                 last_sent: Instant::now(),

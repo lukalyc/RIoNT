@@ -12,11 +12,14 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Fixed
 
-- **NT4 engine: publish retransmissions now re-encode with the current
-  timestamp.** A value frame first sent before clock sync carries ts=0
-  (which servers drop); retransmitting the same frozen bytes never
-  recovered. Writes now land within ~300 ms of connect regardless of
-  timing.
+- **NT4 engine: publishes are now robust against connect-time races.**
+  Three compounding drop causes fixed: publishes before clock sync
+  carried timestamp 0 (servers drop those); retransmissions resent the
+  same frozen frame forever; and a lost publish *declare* was never
+  re-sent, so every value frame from an undeclared publisher was
+  dropped. Retransmissions now re-declare the publisher and re-encode
+  the value with the current timestamp — writes land within ~300 ms of
+  connect regardless of timing.
 
 ## [0.7.1] - 2026-09-07
 
