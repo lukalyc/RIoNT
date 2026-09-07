@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "riont"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "riont-field"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "riont-store",
  "serde",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "riont-nt4"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "futures-util",
  "riont-store",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "riont-store"
-version = "0.7.0"
+version = "0.7.1"
 
 [[package]]
 name = "rmp"
