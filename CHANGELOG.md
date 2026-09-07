@@ -8,6 +8,14 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **NT4 engine: publish retransmissions now re-encode with the current
+  timestamp.** A value frame first sent before clock sync carries ts=0
+  (which servers drop); retransmitting the same frozen bytes never
+  recovered. Writes now land within ~300 ms of connect regardless of
+  timing.
+
 ## [0.7.1] - 2026-09-07
 
 ### Fixed
