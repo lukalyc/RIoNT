@@ -8,6 +8,14 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **NT4 engine: publishes are now robust against connect-time races.**
+  A lost publish *declare* was never re-sent, so every value frame from
+  an undeclared publisher was dropped by the server regardless of
+  timestamp. Retransmissions now re-declare the publisher alongside
+  each re-encoded value frame.
+
 ## [0.7.2] - 2026-09-07
 
 ### Fixed
