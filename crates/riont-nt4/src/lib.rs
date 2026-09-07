@@ -316,6 +316,29 @@ async fn session(
     // finish and the flush/RTT arms starve forever.
     let mut flush = tokio::time::interval(Duration::from_millis(50));
     let mut rtt = tokio::time::interval(Duration::from_millis(1000));
+    rtt.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Clock-sync IMMEDIATELY, not at the first 1 s tick: a client publish
+    // before sync uses timestamp 0, which ntcore servers drop — the write
+    // silently never round-trips (observed live: a tunable written seconds
+    // after connect reported "no round-trip"). The interval's first tick
+    // also fires immediately, but only after the select loop starts; any
+    // publish queued in the meantime would still be ts=0, so the echo is
+    // sent here, inline.
+    {
+        let now = local_us();
+        let rtt_msg = vec![
+            Mv::Integer((-1i64).into()),
+            Mv::Integer(0.into()),
+            Mv::Integer(2.into()),
+            Mv::Integer((now as i64).into()),
+        ];
+        let mut buf = Vec::new();
+        if write_value(&mut buf, &Mv::Array(rtt_msg)).is_ok() {
+            sink.send(WsMessage::Binary(buf))
+                .await
+                .map_err(|e| format!("send rtt: {e}"))?;
+        }
+    }
     // server_time ≈ local_time + offset (from RTT echo).
     let mut clock_offset_us: f64 = 0.0;
     let mut clock_synced = false;
