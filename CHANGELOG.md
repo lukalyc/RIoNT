@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-07
+
 ### Fixed
 
 - **NT4 engine: publish-during-connect livelock.** A write arriving
