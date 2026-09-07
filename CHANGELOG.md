@@ -8,6 +8,15 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **NT4 engine: writes within the first second after connecting were
+  silently dropped.** A publish before clock sync carries timestamp 0,
+  which ntcore servers ignore — the client then reported "no
+  round-trip; robot did not confirm". The engine now requests clock
+  sync immediately at connect, so every publish carries a real
+  timestamp.
+
 ## [0.7.0] - 2026-09-06
 
 ### Added
