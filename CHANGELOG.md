@@ -8,6 +8,19 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **NT4 engine: publish-during-connect livelock.** A write arriving
+  during the connect handshake aborted it and was re-queued — and the
+  re-queued write interrupted the next handshake too, an infinite
+  reconnect churn in which no write ever landed. Connect-phase writes
+  are now buffered and flushed once the session is up.
+- **Pubuids no longer reset per session.** The server keys publishers
+  by (client name, pubuid): a reconnecting client re-publishing
+  pubuid 1 was ignored as a duplicate.
+- The debug log appends across sessions and records each session's end
+  reason (reconnect churn was invisible before).
+
 ## [0.7.3] - 2026-09-07
 
 ### Fixed
