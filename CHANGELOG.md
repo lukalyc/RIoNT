@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-07
+
 ### Fixed
 
 - **NT4 engine: publishes are now robust against connect-time races.**
