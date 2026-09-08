@@ -69,6 +69,14 @@ const TOAST_TTL_MS: u128 = 3500;
 /// Robot loops tick at 20-50 Hz, so 500 ms of silence reliably means the
 /// user program stopped publishing — while absorbing batch/scheduling gaps.
 pub const CODE_STALE_MS: u128 = 500;
+/// CODE also reads RUNNING while the robot's ntcore server answered our
+/// RTT echo within this window. The echo is an application-level ping
+/// (sent every 1 s, answered by the server — which lives INSIDE the robot
+/// program), so a fresh echo proves the robot code is running even when
+/// no topic value has changed for a while (static telemetry: parked arm,
+/// idle robot — NT4 pushes only CHANGED values). 2.5 s absorbs a few lost
+/// echoes without masking a genuinely dead link for long.
+pub const RTT_STALE_MS: u128 = 2500;
 
 /// Command palette entries (VS Code-style fuzzy finder, `:` / Ctrl+P).
 /// Each entry names its owning subsystem so the palette doubles as a
@@ -169,6 +177,11 @@ pub struct App {
     /// Local Instant of the last received value batch: drives CODE RUNNING /
     /// STOPPED (robot user loop alive = frames still streaming).
     pub last_value_at: Option<std::time::Instant>,
+    /// Local Instant of the last RTT echo answered by the robot's ntcore
+    /// server. Secondary proof-of-life for CODE: the server answering a
+    /// ping means the robot program is alive, even mid a quiet-telemetry
+    /// stretch with no changed values.
+    pub last_rtt_at: Option<std::time::Instant>,
 
     /// Persistent configuration (~/.config/riont/config.json).
     pub config: crate::config::Config,
@@ -261,6 +274,7 @@ impl App {
             runtime_at_disconnect: None,
             disconnect_reason: None,
             last_value_at: None,
+            last_rtt_at: None,
             config,
             expanded: HashSet::new(),
             tree_cursor: 0,
@@ -414,6 +428,10 @@ impl App {
         self.server_info = info;
         self.disconnect_reason = None;
         self.retry_attempt = 0;
+        // Fresh session: any proof-of-life from the previous one (values,
+        // RTT echo) belongs to a different link and must not count.
+        self.last_value_at = None;
+        self.last_rtt_at = None;
         // RUNTIME restarts from zero on EVERY connect: a robot-code
         // restart drops the link, so a fresh session is a fresh counter.
         self.connected_since = Some(std::time::Instant::now());
@@ -433,17 +451,24 @@ impl App {
         self.toast(ToastKind::Error, format!("disconnected ({})", reason));
     }
 
-    /// CODE block: Some(true) = RUNNING (frames streaming), Some(false) =
-    /// STOPPED (connection alive but no fresh frames), None = offline.
+    /// CODE block: Some(true) = RUNNING (frames streaming or the robot's
+    /// server answering our ping), Some(false) = STOPPED (connection alive
+    /// but no fresh frames AND no fresh echo), None = offline.
     pub fn code_running(&self) -> Option<bool> {
         if !self.connected {
             return None;
         }
-        let fresh = self
-            .last_value_at
-            .map(|t| t.elapsed().as_millis() <= CODE_STALE_MS)
-            .unwrap_or(false);
-        Some(fresh)
+        let fresh = |t: Option<std::time::Instant>, ms: u128| {
+            t.map(|t| t.elapsed().as_millis() <= ms).unwrap_or(false)
+        };
+        Some(fresh(self.last_value_at, CODE_STALE_MS) || fresh(self.last_rtt_at, RTT_STALE_MS))
+    }
+
+    /// Record an RTT echo from the robot's ntcore server (the client pings
+    /// every 1 s; the echo proves the robot program — which hosts the
+    /// server — is still alive). See `code_running`.
+    pub fn note_rtt(&mut self, now: std::time::Instant) {
+        self.last_rtt_at = Some(now);
     }
 
     /// Drop toasts past their severity-scaled TTL.
@@ -1568,6 +1593,7 @@ impl App {
         self.connected_since = None;
         self.runtime_at_disconnect = None;
         self.last_value_at = None;
+        self.last_rtt_at = None;
         self.tree_cursor = 0;
         self.clamp_watchlist_cursor();
         self.toast(ToastKind::Info, format!("connecting to {}...", target));

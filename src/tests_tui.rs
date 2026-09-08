@@ -225,6 +225,48 @@ fn hud_stopped_when_robot_frames_go_quiet() {
     assert!(l0.contains("CODE: STOPPED"), "{l0}");
 }
 
+#[test]
+fn code_running_while_the_server_answers_the_ping_despite_quiet_frames() {
+    // Regression: NT4 pushes only CHANGED values. A running robot whose
+    // telemetry happens to be static (arm parked, no motion) goes quiet
+    // for seconds while its code is perfectly alive — the old heuristic
+    // reported CODE: STOPPED against a green Driver Station. The 1 s
+    // RTT echo is an application-level ping answered BY the robot's
+    // ntcore server (which lives inside the robot program), so a fresh
+    // echo proves the code is running even with zero changed values.
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.app.last_value_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
+    t.app.note_rtt(std::time::Instant::now());
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("CODE: RUNNING"), "{l0}");
+}
+
+#[test]
+fn code_stopped_when_frames_and_ping_are_both_stale() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.app.last_value_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
+    t.app.last_rtt_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("CODE: STOPPED"), "{l0}");
+}
+
+#[test]
+fn hud_while_offline_names_the_target_it_is_trying() {
+    // Field report: after a crash RIONT retried a stale target and the
+    // operator could not tell WHICH one — "thought it was connected to
+    // the simulation". The HUD must name the target whenever offline.
+    let mut t = Tui::new();
+    t.app.set_disconnected("connect timeout".into());
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("127.0.0.1"), "{l0}");
+}
+
 // ---------------------------------------------------------------------------
 // Topic tree
 // ---------------------------------------------------------------------------
@@ -712,3 +754,4 @@ fn preset_digit_loads_watchlist_from_config_presets() {
         "preset focuses the watchlist"
     );
 }
+

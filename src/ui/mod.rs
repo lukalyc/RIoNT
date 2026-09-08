@@ -189,21 +189,24 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         )
     };
     // Attempt count + humanized reason ride along dim, after the keyword.
-    let comm = if !app.connected && !reason.is_empty() {
-        let detail = match (app.connected, app.retry_attempt) {
-            (_, 0) => format!(" — {}", reason),
-            (_, n) => format!(" (attempt {} — {})", n, reason),
-        };
-        vec![
-            comm,
-            dim(ellipsize_left(
+    // While OFFLINE the retried target is named too: an operator coming
+    // back after a crash must see WHICH address RIONT is hammering (a
+    // stale last_target otherwise reads as "connected to the sim" ghost
+    // state).
+    let mut comm = vec![comm];
+    if !app.connected {
+        if !reason.is_empty() {
+            let detail = match (app.connected, app.retry_attempt) {
+                (_, 0) => format!(" — {}", reason),
+                (_, n) => format!(" (attempt {} — {})", n, reason),
+            };
+            comm.push(dim(ellipsize_left(
                 &detail,
                 (area.width as usize).saturating_sub(60).clamp(12, 40),
-            )),
-        ]
-    } else {
-        vec![comm]
-    };
+            )));
+        }
+        comm.push(dim(format!(" {}", ip)));
+    }
 
     let code = match app.code_running() {
         Some(true) => Span::styled(

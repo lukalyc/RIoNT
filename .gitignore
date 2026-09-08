@@ -13,3 +13,4 @@ __pycache__/
 # release packaging
 stage/
 dist/
+test/probe-v3-config.json

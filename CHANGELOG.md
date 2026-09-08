@@ -10,6 +10,24 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Fixed
 
+- **CODE no longer reads STOPPED while the robot code is running.** The
+  old heuristic called code "stopped" whenever no topic value changed
+  for 500 ms — but NT4 pushes only CHANGED values, so a running robot
+  with static telemetry (parked arm, idle on the bench) was reported
+  STOPPED against a green Driver Station. CODE now also treats the
+  robot's ntcore server answering RIONT's 1-second RTT ping as proof
+  the robot program is alive; STOPPED now requires both quiet frames
+  AND a dead ping. Field-verified failure: connected over USB tether,
+  Driver Station green, RIONT insisting CODE: STOPPED for the whole
+  session.
+- **The last-connected target is persisted, not the launch target.**
+  Every successful connect wrote the CLI launch target to config.json,
+  so after using the connection picker the next launch silently went
+  back to a stale address (observed: RIONT re-trying a closed
+  simulation after the operator had moved to the robot over USB).
+- **The HUD names the target it is retrying while offline.**
+  DISCONNECTED / RECONNECTING now show the address, so a stale target
+  is visible at a glance instead of reading like a ghost connection.
 - **RUNTIME counter no longer freezes after a reconnect.** The old
   uptime (derived from a monotonic maximum of robot timestamps) could
   never recover once a reconnecting robot's clock restarted below it.

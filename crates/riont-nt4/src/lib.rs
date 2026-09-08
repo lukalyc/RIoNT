@@ -85,9 +85,10 @@ pub enum NtUpdate {
         written: NtValue,
         actual: Option<NtValue>,
     },
-    // The client measures these for clock-synced publishes; the current
-    // driver-station HUD intentionally does not surface raw rtt/offset.
-    #[allow(dead_code)]
+    // The client measures these for clock-synced publishes. Rtt doubles
+    // as the consuming app's proof-of-life for its CODE indicator (an
+    // echo answered by the server proves the robot program alive); the
+    // raw rtt/offset VALUES stay unsurfaced in the driver-station HUD.
     /// Round trip time in ms.
     Rtt(f64),
     #[allow(dead_code)]

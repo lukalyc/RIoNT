@@ -574,6 +574,43 @@ def scenario_retarget(tui):
           saved == "127.0.0.1:5814", saved or "missing")
 
 
+def scenario_last_target_persist():
+    """Regression: the CONNECTED target is persisted, not the launch one.
+
+    The old code wrote the CLI launch target on every Connected update,
+    so after the operator picker-retargeted, a stale address was silently
+    restored on the next launch (observed live: RIONT kept re-trying a
+    closed simulation after the operator had moved to the robot).
+    """
+
+    def _last_target():
+        try:
+            with open(CFG_PATH) as fh:
+                return json.load(fh).get("last_target", "")
+        except (OSError, json.JSONDecodeError):
+            return ""
+    # Boot on a DEAD port so launch target != connected target.
+    tui2 = Tui(target="127.0.0.1:5999")
+    prev_screen = CURRENT["screen"]
+    CURRENT["screen"] = tui2.text
+    try:
+        check("boot on dead target leaves ONLINE",
+              wait_until(lambda: "COMM: ONLINE" not in tui2.header(), timeout=8),
+              tui2.header())
+        tui2.tap("c", lambda: "[CONNECT TARGET]" in tui2.text(), desc="picker opens")
+        tui2.send("127.0.0.1:5814")
+        tui2.send("\r")
+        check("picker retarget to live server", wait_online(tui2), tui2.header())
+        # The Connected-triggered config save lands asynchronously: poll
+        # the file (never fixed sleeps).
+        check("CONNECTED target persisted (not the launch target)",
+              wait_until(lambda: _last_target() == "127.0.0.1:5814", timeout=4),
+              f"last_target={_last_target()!r} (launch was 127.0.0.1:5999)")
+    finally:
+        tui2.close()
+        CURRENT["screen"] = prev_screen
+
+
 def scenario_presets(tui):
     clear_watchlist(tui)
     tui.tap("1", lambda: tui.watchlist_count() > 0, desc="preset 1 loads")
@@ -735,6 +772,7 @@ def main():
         ("stacking", lambda: scenario_stacking(tui)),
         ("reconnect", lambda: scenario_reconnect(tui, server)),
         ("retarget", lambda: scenario_retarget(tui)),
+        ("last-target-persist", lambda: scenario_last_target_persist()),
         ("presets", lambda: scenario_presets(tui)),
         ("settings", lambda: scenario_settings(tui)),
         ("save-preset", lambda: scenario_save_preset(tui)),

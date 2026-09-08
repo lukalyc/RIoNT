@@ -278,9 +278,15 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     }
                     NtUpdate::Connected { server_info } => {
                         app.set_connected(server_info);
-                        // Remember the target in config.json for the next
-                        // run (Connection Picker MRU ordering).
-                        app.config.last_target = Some(target.clone());
+                        // Remember the ACTUALLY connected target in
+                        // config.json for the next run (Connection Picker
+                        // MRU ordering). NOT the launch target: after a
+                        // picker retarget the two differ, and persisting
+                        // the launch one silently drags the next launch
+                        // back to a stale address (observed: RIONT kept
+                        // re-trying a closed simulation after the operator
+                        // had moved to the robot).
+                        app.config.last_target = Some(app.target.clone());
                         if let Err(e) = app.config.save() {
                             app.toast(app::ToastKind::Warn, format!("save config: {}", e));
                         }
@@ -317,10 +323,13 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     NtUpdate::PublishVerified { topic, written, actual } => {
                         app.on_publish_verified(&topic, &written, &actual);
                     }
-                    // Per-topic RTT/clock measurements stay inside the client
-                    // (needed for clock-synced publishes); the HUD is
-                    // driver-station style and does not surface them.
-                    NtUpdate::Rtt(_) | NtUpdate::ClockOffset(_) => {}
+                    // RTT echoes double as the robot program's
+                    // proof-of-life for the CODE indicator; clock offset
+                    // stays engine-internal (clock-synced publishes).
+                    NtUpdate::Rtt(_) => {
+                        app.note_rtt(Instant::now());
+                    }
+                    NtUpdate::ClockOffset(_) => {}
                 }
             }
             // background product operations (SSH restart) reporting toasts
