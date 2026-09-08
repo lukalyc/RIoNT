@@ -1,6 +1,6 @@
-# RIONT — Robot Inspection Over Network Tables
+# RIoNT — Robot Inspection Over Network Tables
 
-A keyboard-only NetworkTables (NT4) dashboard for FRC. Rust + ratatui.
+A keyboard-only NetworkTables (NT4) dashboard for FRC. Rust + ratatui. Pronounced "RINT"
 
 Find a topic fast, see its value clearly, right now — with nothing to
 configure.
