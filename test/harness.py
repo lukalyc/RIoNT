@@ -363,9 +363,9 @@ def scenario_boot(server, harness, tui):
         ]))
     check("boot TUI reaches COMM ONLINE", wait_online(tui), tui.header())
     # Values stream right after connect: wait for the value-derived HUD
-    # (uptime + CODE RUNNING) before any value assertions downstream.
+    # (CODE RUNNING) before any value assertions downstream.
     check("robot frames stream (CODE RUNNING)", wait_until(
-        lambda: "CODE: RUNNING" in tui.header() and "--:--:--" not in tui.header(),
+        lambda: "CODE: RUNNING" in tui.header(),
         timeout=10), tui.header())
 
 
@@ -373,7 +373,7 @@ def scenario_hud(tui):
     h = tui.header()
     check("HUD shows ONLINE + target ip", "ONLINE" in h and "127.0.0.1" in h, h)
     check("HUD shows CODE RUNNING", "CODE: RUNNING" in h, h)
-    check("HUD shows UPTIME clock", "UPTIME: " in h and ":" in h.split("UPTIME: ")[1], h)
+    check("HUD shows RUNTIME clock", "RUNTIME: " in h and ":" in h.split("RUNTIME: ")[1], h)
     m = re.search(r"(\d+) topics", h)
     check("HUD topic count > 10", m and int(m.group(1)) > 10, h)
     check("HUD no global Hz / rtt metric", " Hz" not in h and "rtt" not in h, h)
@@ -452,6 +452,22 @@ def scenario_edit_publish(tui, kp_read, al_read, cl_read):
     txt = tui.text()
     check("publish toast names topic", "kP" in txt and "[SUCCESS]" in txt, txt[-300:])
 
+    # local echo: the server does not send the client's own publish back,
+    # so the tree must show the edited value right away. Match the row
+    # (type + value together) so the publish toast cannot satisfy it.
+    check("edited value shown in tree", wait_until(
+        lambda: any("double" in ln and "0.0500" in ln for ln in tui.lines()),
+        timeout=4), tui.text()[-500:])
+    # read-back verification: the engine reads the topic back over a
+    # second connection; the server holds the written value, so the edit
+    # confirms SILENTLY. A failing verification would toast [WARN] at the
+    # 3 s mark, and the success toast outlives that (3.5 s TTL) — so once
+    # the success toast is gone, any [WARN] naming the topic proves a
+    # false failure.
+    wait_until(lambda: "[SUCCESS]" not in tui.text(), timeout=6)
+    check("read-back confirms edit silently", not any(
+        "[WARN]" in ln and "kP" in ln for ln in tui.lines()), tui.text()[-500:])
+
     # invalid input: editor stays open, nothing published
     goto_topic(tui, "kp")
     tui.send("e")
@@ -524,6 +540,11 @@ def scenario_reconnect(tui, server):
     check("values flow again after reconnect",
           wait_until(lambda: "Battery Voltage" in tui.text(), timeout=6),
           tui.text())
+    # RUNTIME restarts from zero on reconnect (the counter is local and
+    # per-connection): the just-reconnected HUD reads 00:00:xx.
+    m = re.search(r"RUNTIME: (\d\d:\d\d:\d\d)", tui.header())
+    check("runtime restarted after reconnect",
+          m and m.group(1) < "00:01:00", tui.header())
 
     # palette-driven reconnect
     tui.send(":")

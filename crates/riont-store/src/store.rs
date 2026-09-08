@@ -103,6 +103,26 @@ impl NtValue {
         }
     }
 
+    /// Numeric-tolerant equality for publish verification (read-back):
+    /// doubles compare with a small relative epsilon (a server may round a
+    /// written value through f32 on its way back); everything else compares
+    /// exactly.
+    pub fn approx_eq(&self, other: &NtValue) -> bool {
+        const REL_EPS: f64 = 1e-6;
+        match (self, other) {
+            (NtValue::Double(a), NtValue::Double(b)) => {
+                (a - b).abs() <= REL_EPS * a.abs().max(b.abs()).max(1.0)
+            }
+            (NtValue::DoubleArray(a), NtValue::DoubleArray(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b)
+                        .all(|(x, y)| (x - y).abs() <= REL_EPS * x.abs().max(y.abs()).max(1.0))
+            }
+            (a, b) => a == b,
+        }
+    }
+
     /// Compact single-line rendering for the tree/inspector.
     pub fn format(&self) -> String {
         match self {

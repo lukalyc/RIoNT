@@ -151,7 +151,7 @@ fn braille_chars(s: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hud_online_shows_comm_code_uptime_and_cargo_version() {
+fn hud_online_shows_comm_code_runtime_and_cargo_version() {
     let mut t = Tui::new();
     t.connect();
     t.feed_battery();
@@ -159,13 +159,40 @@ fn hud_online_shows_comm_code_uptime_and_cargo_version() {
     assert!(l0.contains("COMM: ONLINE"), "{l0}");
     assert!(l0.contains("127.0.0.1"), "{l0}");
     assert!(l0.contains("CODE: RUNNING"), "{l0}");
-    assert!(l0.contains("UPTIME: "), "{l0}");
+    assert!(l0.contains("RUNTIME: "), "{l0}");
     // Version comes from Cargo.toml at compile time — this test doubles as
     // the version-release check (the E2E harness asserts the same thing).
     assert!(
         l0.contains(&format!("RIONT v{}", env!("CARGO_PKG_VERSION"))),
         "{l0}"
     );
+}
+
+#[test]
+fn runtime_restarts_from_zero_on_reconnect() {
+    let mut t = Tui::new();
+    t.connect();
+    // Age the session past an hour: the HUD must show it.
+    t.app.connected_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(3661));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RUNTIME: 01:01:01"), "{l0}");
+
+    // Disconnect freezes the counter at the reached value...
+    t.app.set_disconnected("ws closed".into());
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RUNTIME: 01:01:01"), "{l0}");
+
+    // ...and reconnect restarts it from zero, not from the frozen value.
+    t.connect();
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RUNTIME: 00:00:00"), "{l0}");
+}
+
+#[test]
+fn runtime_is_blank_before_the_first_connection() {
+    let mut t = Tui::new();
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RUNTIME: --:--:--"), "{l0}");
 }
 
 #[test]
@@ -353,6 +380,107 @@ fn edit_publish_returns_client_command_with_parsed_value() {
     let toasts = t.toast_text();
     assert!(toasts.contains("published"), "{toasts}");
     assert!(toasts.contains("SmartDashboard/kP"), "{toasts}");
+}
+
+// Edit confirmation: local echo + engine read-back verification (the
+// server does NOT echo a client's own publish back, so the display must
+// update locally, and the engine verifies the write with a read-back over
+// a second connection; the app only reacts to its verdict).
+
+#[test]
+fn edit_applies_local_echo() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    let action = t.key(KeyCode::Enter);
+    assert!(matches!(
+        action,
+        UiAction::Client(ClientCommand::Publish { .. })
+    ));
+    // The tree and inspector read the store: it must already hold the
+    // edited value, not the pre-edit one.
+    assert_eq!(
+        t.app.store.topics["SmartDashboard/kP"].current,
+        Some(NtValue::Double(0.05))
+    );
+}
+
+#[test]
+fn edit_readback_confirmed_silently() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    t.key(KeyCode::Enter);
+    // The engine read the topic back and the server holds the written
+    // value: no extra toast.
+    t.app.on_publish_verified(
+        "SmartDashboard/kP",
+        &NtValue::Double(0.05),
+        &Some(NtValue::Double(0.05)),
+    );
+    let toasts = t.toast_text();
+    assert!(!toasts.contains("not confirmed"), "{toasts}");
+}
+
+#[test]
+fn edit_overridden_by_robot_warns() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    t.key(KeyCode::Enter);
+    // Read-back returned a DIFFERENT value: the robot overrode the write.
+    t.app.on_publish_verified(
+        "SmartDashboard/kP",
+        &NtValue::Double(0.05),
+        &Some(NtValue::Double(0.42)),
+    );
+    let toasts = t.toast_text();
+    assert!(toasts.contains("not confirmed"), "{toasts}");
+    assert!(toasts.contains("0.4200"), "{toasts}");
+}
+
+#[test]
+fn edit_without_readback_warns() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    t.key(KeyCode::Enter);
+    // No value could be read back within the window.
+    t.app
+        .on_publish_verified("SmartDashboard/kP", &NtValue::Double(0.05), &None);
+    let toasts = t.toast_text();
+    assert!(toasts.contains("not confirmed"), "{toasts}");
+}
+
+#[test]
+fn edit_fuzzy_readback_still_confirms() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    t.key(KeyCode::Enter);
+    // A server rounding the value through f32 must not count as failure.
+    t.app.on_publish_verified(
+        "SmartDashboard/kP",
+        &NtValue::Double(0.05),
+        &Some(NtValue::Double(0.05_f32 as f64)),
+    );
+    let toasts = t.toast_text();
+    assert!(!toasts.contains("not confirmed"), "{toasts}");
 }
 
 #[test]

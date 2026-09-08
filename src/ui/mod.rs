@@ -219,18 +219,18 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         None => dim("--"),
     };
 
-    // Uptime from the robot's server clock: NT4 timestamps on a roboRIO are
-    // FPGA microseconds since boot, so the latest value timestamp IS the
-    // uptime once synced (epoch-based off-robot servers fall back to the
-    // first→last delta). Rendered HH:MM:SS, no local-app wall clock.
-    const EPOCH_US_CUTOFF: u64 = 500_000_000_000_000; // ~15.8 years of µs
-    let uptime = match app.last_server_ts {
-        Some(ts) if ts < EPOCH_US_CUTOFF => fmt_hms(ts / 1_000_000),
-        Some(ts) => match app.first_server_ts {
-            Some(first) if ts >= first => fmt_hms((ts - first) / 1_000_000),
-            _ => "--:--:--".into(),
+    // RUNTIME: how long the current connection has been up, measured
+    // locally. Starts from zero on every connect (a robot-code restart
+    // drops the link, so it restarts there too), freezes at the value the
+    // session reached while disconnected. Rendered HH:MM:SS, no local-app
+    // wall clock, no dependence on robot clock sync.
+    let runtime = match (app.connected_since, app.runtime_at_disconnect) {
+        (Some(_), Some(frozen)) => fmt_hms(frozen.as_secs()),
+        (Some(since), None) => fmt_hms(since.elapsed().as_secs()),
+        (None, frozen) => match frozen {
+            Some(d) => fmt_hms(d.as_secs()),
+            None => "--:--:--".into(),
         },
-        None => "--:--:--".into(),
     };
 
     let mut line = vec![
@@ -245,8 +245,8 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         dim("  [CODE: "),
         code,
         dim("]"),
-        dim("  [UPTIME: "),
-        plain(uptime),
+        dim("  [RUNTIME: "),
+        plain(runtime),
         dim("]"),
         dim(format!("  {} topics", app.store.topics.len())),
     ]);

@@ -91,6 +91,14 @@ conda create -n nt-tui-test python=3.11
 conda run -n nt-tui-test pip install pyntcore pyte
 ```
 
+`test/probe_echo.py` and `test/probe_echo2.py` are standalone
+diagnostics (not part of the harness) that establish the publish
+verification premises: an ntcore server never echoes a client's own
+publish back to it (probe_echo.py), and a read-back requires a second,
+separate client connection (probe_echo2.py). They additionally need
+`websocket-client` and `msgpack` in the same environment
+(`pip install websocket-client msgpack`).
+
 Rule of thumb: if a change only rewords UI copy or adjusts geometry,
 `cargo test` is the arbiter — the harness must not need editing for that.
 
@@ -139,6 +147,12 @@ Versions identify releases, not commits:
 CI (`.github/workflows/ci.yml`) runs rustfmt + clippy (warnings denied),
 `cargo test` on three OSes, and the E2E harness on every push/PR. Run
 `cargo fmt` and `cargo clippy --all-targets` before pushing.
+
+**Zero-warning rule: RIONT must not be committed if the build has
+warnings.** A `cargo build` that emits warnings (unused variables,
+unreachable patterns, dead code, …) is not done — fix them or `#[allow]`
+with a comment explaining why, and verify with `cargo build 2>&1 | grep
+warning` before committing. CI enforces the same bar for clippy.
 
 ## Agent-facing rules
 

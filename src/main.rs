@@ -314,6 +314,9 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     NtUpdate::TopicRemoved(name) => {
                         app.store.topics.remove(&name);
                     }
+                    NtUpdate::PublishVerified { topic, written, actual } => {
+                        app.on_publish_verified(&topic, &written, &actual);
+                    }
                     // Per-topic RTT/clock measurements stay inside the client
                     // (needed for clock-synced publishes); the HUD is
                     // driver-station style and does not surface them.

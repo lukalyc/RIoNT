@@ -60,12 +60,19 @@ version on any screenshot therefore identifies its exact release.
 Run BOTH test tiers (see "Testing workflow" below):
 
 - `cargo test` — in-process tests must pass; the
-  `hud_online_shows_comm_code_uptime_and_cargo_version` test enforces
+  `hud_online_shows_comm_code_runtime_and_cargo_version` test enforces
   that the HUD matches `Cargo.toml` (read dynamically — no hardcoded
   string to update anywhere).
 - `cargo build`, then `python test/harness.py` — the end-to-end contract
   harness (auto-builds if the binary is stale; fail-fast with a full-screen
   dump on the first failure).
+
+**Zero-warning rule: RIONT must not be committed if the build has
+warnings.** `cargo build` (and `cargo test`) must complete with no
+compiler warnings — warnings are errors-in-waiting and hide real
+regressions in their noise. CI denies clippy warnings; the same standard
+applies to plain builds before every commit. Fix or `#[allow(...)]` with
+a comment explaining why — never leave a warning for "later".
 
 ## Testing workflow for agents (follow this order)
 

@@ -19,6 +19,8 @@ configure.
   field with live position, heading and trail (details below).
 - **Inline editing** — `e` publishes a new bool / int / double / string
   value over NT4. While offline, edits are queued and sent on reconnect.
+  Every edit is verified by read-back over a second connection; an edit
+  the robot does not hold surfaces a warning.
 - **Command palette** — `:` opens a fuzzy action runner: view/edit
   settings, manage saved targets, save/load presets, reconnect, restart
   robot code over SSH, copy a topic path.
@@ -28,8 +30,9 @@ configure.
   `config.json`. A trailing `/*` pins a whole subtree and adopts topics the
   robot starts publishing later.
 - **Driver-station HUD** — `COMM` (link state + failure reason),
-  `CODE` (robot code RUNNING/STOPPED) and `UPTIME` from the robot's server
-  clock. No RTT, no global Hz.
+  `CODE` (robot code RUNNING/STOPPED) and `RUNTIME` (how long the current
+  connection has been up; freezes on disconnect, restarts from zero on
+  reconnect). No RTT, no global Hz.
 - **Telemetry neutrality** — rates and deltas render in muted grey; no
   stale flags, no alarms. Slow-but-alive topics are normal.
 - **Resilience** — auto-reconnects forever; the watchlist persists across

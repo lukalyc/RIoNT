@@ -8,6 +8,32 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **RUNTIME counter no longer freezes after a reconnect.** The old
+  uptime (derived from a monotonic maximum of robot timestamps) could
+  never recover once a reconnecting robot's clock restarted below it.
+  The HUD now measures RUNTIME locally — how long the current connection
+  has been up. It freezes on disconnect and restarts from zero on
+  reconnect, including after a robot-code restart.
+- **Edits now update the displayed value.** The NT4 server never sends a
+  client's own publish back to it, so the tree and inspector kept showing
+  the pre-edit value even though the write landed on the robot. RIONT now
+  applies the edit locally (local echo) the moment it publishes.
+- **Edits are verified by read-back.** After every publish RIONT opens a
+  short-lived second NT4 connection and reads the topic back — the
+  robot's ntcore instance IS the server, so a matching read-back proves
+  the robot accepted the write. A confirmed edit stays silent; if the
+  robot reads back a different value or nothing at all within 3 s, a
+  `[WARN]` toast says the edit was not confirmed. A disconnect during
+  the window reports nothing.
+
+### Changed
+
+- Zero-warning policy documented: RIONT must not be committed if the
+  build emits warnings (see CONTRIBUTING.md / AGENTS.md). Two latent
+  warnings in the nt4 engine fixed.
+
 ## [0.7.4] - 2026-09-07
 
 ### Fixed

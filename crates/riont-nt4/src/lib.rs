@@ -73,6 +73,18 @@ pub enum NtUpdate {
     },
     /// Topic deleted on the server.
     TopicRemoved(String),
+    /// Post-publish verification result: the engine read the topic back
+    /// over a short-lived second client connection (the NT4 server never
+    /// sends a client's own publish back to it, so this is the only way to
+    /// confirm a write took effect). `actual` is None when no value could
+    /// be read back within the window (timeout, topic gone, read connection
+    /// failed). Reports nothing if the session retargeted/reconnected
+    /// meanwhile — a disconnect during the window exits silently.
+    PublishVerified {
+        topic: String,
+        written: NtValue,
+        actual: Option<NtValue>,
+    },
     // The client measures these for clock-synced publishes; the current
     // driver-station HUD intentionally does not surface raw rtt/offset.
     #[allow(dead_code)]
@@ -192,6 +204,11 @@ pub async fn run_client(
     // (client name, pubuid) publishers across reconnects, and a
     // re-publish with a stale pubuid is ignored as a duplicate.
     let mut next_pubuid: u64 = 1;
+    // Session generation: bumped after every session dies. In-flight
+    // publish verifications capture the generation they were spawned
+    // under and report NOTHING if it changed — a retarget/reconnect during
+    // the 3 s verification window exits silently.
+    let session_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
         updates
             .send(NtUpdate::Connecting {
@@ -203,9 +220,9 @@ pub async fn run_client(
             &target,
             &updates,
             &mut commands,
-            &commands_tx,
             &retarget_to,
             &mut next_pubuid,
+            &session_gen,
         )
         .await;
         let mut backoff_log = open_debug_log();
@@ -251,6 +268,7 @@ pub async fn run_client(
         } else {
             attempt = attempt.saturating_add(1);
         }
+        session_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -261,10 +279,11 @@ async fn session(
     target: &str,
     updates: &UnboundedSender<NtUpdate>,
     commands: &mut UnboundedReceiver<ClientCommand>,
-    commands_tx: &UnboundedSender<ClientCommand>,
     retarget_to: &Arc<Mutex<Option<String>>>,
     next_pubuid: &mut u64,
+    session_gen: &Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<String, String> {
+    let my_gen = session_gen.load(std::sync::atomic::Ordering::SeqCst);
     let mut debug_log = open_debug_log();
     debug_msg(&mut debug_log, &format!("session start: {}", target));
 
@@ -306,7 +325,6 @@ async fn session(
                 pub_cmd @ ClientCommand::Publish { .. } => {
                     queued_publishes.push(pub_cmd);
                 }
-                _ => {}
             },
         }
     };
@@ -413,6 +431,14 @@ async fn session(
             if write_value(&mut bin, &Mv::Array(val_msg)).is_ok()
                 && sink.send(WsMessage::Binary(bin)).await.is_ok()
             {
+                spawn_verify(
+                    target.to_string(),
+                    session_gen.clone(),
+                    my_gen,
+                    updates.clone(),
+                    topic.clone(),
+                    value.clone(),
+                );
                 pending.push(Pending {
                     declare: publish.to_string(),
                     value,
@@ -587,6 +613,14 @@ async fn session(
                             && ok
                             && sink.send(WsMessage::Binary(bin)).await.is_ok()
                         {
+                            spawn_verify(
+                                target.to_string(),
+                                session_gen.clone(),
+                                my_gen,
+                                updates.clone(),
+                                topic.clone(),
+                                value.clone(),
+                            );
                             pending.push(Pending {
                                 declare: publish.to_string(),
                                 value: value.clone(),
@@ -611,6 +645,158 @@ async fn session(
     } else {
         Err(reason)
     }
+}
+
+// ---------------------------------------------------------------------------
+// publish verification (read-back over a second client connection)
+// ---------------------------------------------------------------------------
+
+/// How long a publish verification may take: connect + subscribe + read
+/// back. A write that cannot be confirmed within this window reports as
+/// unconfirmed.
+const VERIFY_WINDOW: Duration = Duration::from_secs(3);
+
+/// Unique client names for verifier connections: the server keys clients
+/// by name, and two verifications may overlap after rapid edits.
+static VERIFY_CLIENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Fire-and-forget read-back verification of a publish. The NT4 server
+/// never sends a client's own publishes back to it (verified against
+/// ntcore — even a fresh subscription on the SAME connection gets
+/// nothing), so confirming "the value actually changed on the robot"
+/// requires a second, short-lived client connection to read the topic
+/// back. The robot's ntcore instance IS the server, so a matching
+/// read-back proves the robot accepted the write.
+fn spawn_verify(
+    target: String,
+    session_gen: Arc<std::sync::atomic::AtomicU64>,
+    my_gen: u64,
+    updates: UnboundedSender<NtUpdate>,
+    topic: String,
+    written: NtValue,
+) {
+    tokio::spawn(async move {
+        let actual = read_back(&target, &topic, &written, VERIFY_WINDOW).await;
+        // The session died (retarget/reconnect) while we verified: report
+        // nothing — a disconnect during the window exits silently.
+        if session_gen.load(std::sync::atomic::Ordering::SeqCst) != my_gen {
+            return;
+        }
+        updates
+            .send(NtUpdate::PublishVerified {
+                topic,
+                written,
+                actual,
+            })
+            .ok();
+    });
+}
+
+/// Connect a throwaway NT4 client, subscribe to exactly `topic`, and read
+/// the topic back until the window closes. Returns the LAST value seen:
+/// the verifier races the write itself (connect-phase publishes go out
+/// with ts=0 and land only via the ~300 ms retransmit), so an early stale
+/// snapshot must not decide the verdict — a late-arriving matching value
+/// confirms, and the first matching value ends the wait early. None only
+/// when nothing was read back at all.
+async fn read_back(
+    target: &str,
+    topic: &str,
+    written: &NtValue,
+    window: Duration,
+) -> Option<NtValue> {
+    // Store keys and wire names differ by the leading slash.
+    let wire = format!("/{}", topic.trim_start_matches('/'));
+    let seq = VERIFY_CLIENT_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let url = format!("ws://{}/nt/riont-verify-{}", target, seq);
+    let mut request = url.into_client_request().ok()?;
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static(NT_SUBPROTOCOL),
+    );
+    let deadline = tokio::time::Instant::now() + window;
+    let (ws, _) = tokio::time::timeout_at(deadline, tokio_tungstenite::connect_async(request))
+        .await
+        .ok()?
+        .ok()?;
+    let (mut sink, mut stream) = ws.split();
+    // Initial values for matching topics arrive immediately on subscribe.
+    let subscribe = json!([{
+        "method": "subscribe",
+        "params": {
+            "topics": [wire],
+            "subuid": 1,
+            "options": {"prefix": false, "all": true, "periodic": 0.02}
+        }
+    }]);
+    sink.send(WsMessage::Text(subscribe.to_string()))
+        .await
+        .ok()?;
+
+    let mut topic_id: Option<u64> = None;
+    let mut latest: Option<NtValue> = None;
+    while tokio::time::Instant::now() < deadline {
+        // First matching value is definitive — stop waiting early.
+        if latest.as_ref().is_some_and(|v| written.approx_eq(v)) {
+            return latest;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, stream.next()).await {
+            Err(_) => return latest, // window over: report what we last saw
+            Ok(None | Some(Err(_))) => return latest, // closed / socket error
+            Ok(Some(Ok(WsMessage::Text(t)))) => {
+                if let Some((name, id)) = announce_in(&t) {
+                    if name == wire {
+                        topic_id = Some(id);
+                    }
+                }
+            }
+            Ok(Some(Ok(WsMessage::Binary(b)))) => {
+                // One frame may contain several MessagePack messages.
+                let mut data: &[u8] = &b;
+                while !data.is_empty() {
+                    match rmpv::decode::read_value(&mut data) {
+                        Ok(v) => {
+                            if let Some(val) = value_frame_for(&v, topic_id) {
+                                latest = Some(val);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+    latest
+}
+
+/// First (name, id) announce pair in a JSON control frame, if any.
+fn announce_in(t: &str) -> Option<(String, u64)> {
+    let msgs: serde_json::Value = serde_json::from_str(t).ok()?;
+    let empty = Vec::new();
+    let items: &Vec<serde_json::Value> = msgs.as_array().unwrap_or(&empty);
+    for item in items {
+        if item.get("method").and_then(|m| m.as_str()) == Some("announce") {
+            let params = item.get("params")?;
+            return Some((
+                params.get("name")?.as_str()?.to_string(),
+                params.get("id")?.as_u64()?,
+            ));
+        }
+    }
+    None
+}
+
+/// Decoded value of a MessagePack value frame `[id, ts, type, value]`
+/// belonging to `topic_id`, if this message is one.
+fn value_frame_for(val: &Mv, topic_id: Option<u64>) -> Option<NtValue> {
+    let id = topic_id?;
+    let arr = val.as_array()?;
+    if arr.len() != 4 || int_of(&arr[0]).max(0) as u64 != id {
+        return None;
+    }
+    nt_value(int_of(&arr[2]).max(0) as u64, &arr[3])
 }
 
 // ---------------------------------------------------------------------------
@@ -869,4 +1055,78 @@ fn to_msgpack(v: &NtValue) -> (&'static str, u64, Mv) {
 #[allow(unused)]
 fn _cursor_unused(c: Cursor<Vec<u8>>) -> Cursor<Vec<u8>> {
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmpv::encode::write_value;
+
+    #[test]
+    fn announce_in_finds_name_and_id() {
+        let t = r#"[{"method":"announce","params":{"name":"/Tuning/Elevator/KA","id":42,"type":"double","properties":{}}}]"#;
+        let (name, id) = announce_in(t).expect("announce found");
+        assert_eq!(name, "/Tuning/Elevator/KA");
+        assert_eq!(id, 42);
+    }
+
+    #[test]
+    fn announce_in_ignores_other_methods_and_garbage() {
+        assert_eq!(
+            announce_in(r#"[{"method":"properties","params":{"name":"/a"}}]"#),
+            None
+        );
+        assert_eq!(announce_in("not json"), None);
+    }
+
+    #[test]
+    fn value_frame_for_decodes_matching_topic_only() {
+        // Server->client value frame: [topic_id, ts, type, value].
+        let frame = Mv::Array(vec![
+            Mv::Integer(24.into()),
+            Mv::Integer(1_000.into()),
+            Mv::Integer(1.into()), // double
+            Mv::F64(0.45),
+        ]);
+        assert_eq!(
+            value_frame_for(&frame, Some(24)),
+            Some(NtValue::Double(0.45))
+        );
+        // A different topic id (or unknown id) must not decode.
+        assert_eq!(value_frame_for(&frame, Some(25)), None);
+        assert_eq!(value_frame_for(&frame, None), None);
+    }
+
+    #[test]
+    fn value_frame_for_ignores_non_value_messages() {
+        // 4-tuples whose first element is a pubuid (client->server shape)
+        // decode only if the pubuid happens to equal the tracked topic id —
+        // and the RTT echo (id -1) never does.
+        let rtt = Mv::Array(vec![
+            Mv::Integer((-1i64).into()),
+            Mv::Integer(0.into()),
+            Mv::Integer(2.into()),
+            Mv::Integer(5.into()),
+        ]);
+        assert_eq!(value_frame_for(&rtt, Some(24)), None);
+    }
+
+    #[test]
+    fn read_back_msgpack_roundtrip_shape() {
+        // Sanity: a value frame encodes with the same helper the session
+        // uses and decodes through value_frame_for.
+        let frame = Mv::Array(vec![
+            Mv::Integer(7.into()),
+            Mv::Integer(0.into()),
+            Mv::Integer(0.into()), // boolean
+            Mv::Boolean(true),
+        ]);
+        let mut buf = Vec::new();
+        write_value(&mut buf, &frame).expect("encode");
+        let decoded = rmpv::decode::read_value(&mut buf.as_slice()).expect("decode");
+        assert_eq!(
+            value_frame_for(&decoded, Some(7)),
+            Some(NtValue::Boolean(true))
+        );
+    }
 }

@@ -156,9 +156,16 @@ pub struct App {
     pub connected: bool,
     pub connecting: bool,
     pub server_info: String,
-    pub first_server_ts: Option<u64>,
-    pub last_server_ts: Option<u64>,
     pub disconnect_reason: Option<String>,
+    /// Local Instant the current connection was established: RUNTIME is
+    /// elapsed-since-here. Set on every successful connect, so a reconnect
+    /// (including after a robot-code restart drops the link) restarts the
+    /// counter from zero.
+    pub connected_since: Option<std::time::Instant>,
+    /// RUNTIME frozen at the moment the link dropped: while disconnected
+    /// the HUD keeps showing the runtime the session reached, instead of
+    /// silently ticking on or blanking.
+    pub runtime_at_disconnect: Option<std::time::Duration>,
     /// Local Instant of the last received value batch: drives CODE RUNNING /
     /// STOPPED (robot user loop alive = frames still streaming).
     pub last_value_at: Option<std::time::Instant>,
@@ -250,8 +257,8 @@ impl App {
             connected: false,
             connecting: true,
             server_info: String::new(),
-            first_server_ts: None,
-            last_server_ts: None,
+            connected_since: None,
+            runtime_at_disconnect: None,
             disconnect_reason: None,
             last_value_at: None,
             config,
@@ -331,17 +338,73 @@ impl App {
                     self.fms_red = Some(*b);
                 }
             }
-            let ts = *ts;
-            if self.first_server_ts.is_none() {
-                self.first_server_ts = Some(ts);
-            }
-            if ts > self.last_server_ts.unwrap_or(0) {
-                self.last_server_ts = Some(ts);
-            }
-            self.store.apply_value(name, v.clone(), ts, now);
+            self.store.apply_value(name, v.clone(), *ts, now);
         }
         if !batch.is_empty() {
             self.last_value_at = Some(now);
+        }
+    }
+
+    /// Post-publish verification result (see `NtUpdate::PublishVerified`):
+    /// the engine read the topic back over a second connection. A matching
+    /// value confirms the edit silently — the success toast from the edit
+    /// itself is the last word. A different value (the robot overrode the
+    /// write, or the server never accepted it) or no read-back at all gets
+    /// an honest warning, because the user may act on a value that did not
+    /// actually stick.
+    pub fn on_publish_verified(
+        &mut self,
+        topic: &str,
+        written: &NtValue,
+        actual: &Option<NtValue>,
+    ) {
+        match actual {
+            Some(v) if written.approx_eq(v) => {
+                // Authoritative confirmation: reflect the read-back in the
+                // store too. The live-edit path already applied a local
+                // echo, but the offline-queued path did not (there the
+                // write had not landed yet) — this closes that gap.
+                let server_ts = self
+                    .store
+                    .topics
+                    .get(topic)
+                    .and_then(|t| t.last_server_ts)
+                    .unwrap_or(0);
+                self.store
+                    .apply_value(topic, v.clone(), server_ts, std::time::Instant::now());
+            }
+            Some(v) => {
+                // The read-back is authoritative: the robot holds a value
+                // different from what we wrote (it overrode the edit, or
+                // the write never landed). Reflect it in the store so the
+                // tree/inspector stop showing a value the robot does not
+                // hold, and warn.
+                let server_ts = self
+                    .store
+                    .topics
+                    .get(topic)
+                    .and_then(|t| t.last_server_ts)
+                    .unwrap_or(0);
+                self.store
+                    .apply_value(topic, v.clone(), server_ts, std::time::Instant::now());
+                self.toast(
+                    ToastKind::Warn,
+                    format!(
+                        "{} = {} — edit not confirmed, robot reads {}",
+                        topic,
+                        written.format(),
+                        v.format()
+                    ),
+                )
+            }
+            None => self.toast(
+                ToastKind::Warn,
+                format!(
+                    "{} = {} — edit not confirmed (no read-back)",
+                    topic,
+                    written.format()
+                ),
+            ),
         }
     }
 
@@ -351,6 +414,10 @@ impl App {
         self.server_info = info;
         self.disconnect_reason = None;
         self.retry_attempt = 0;
+        // RUNTIME restarts from zero on EVERY connect: a robot-code
+        // restart drops the link, so a fresh session is a fresh counter.
+        self.connected_since = Some(std::time::Instant::now());
+        self.runtime_at_disconnect = None;
         self.toast(ToastKind::Success, format!("connected to {}", self.target));
     }
 
@@ -358,6 +425,11 @@ impl App {
         self.connected = false;
         self.connecting = true;
         self.disconnect_reason = Some(reason.clone());
+        // Freeze RUNTIME at the value the session reached — it stops
+        // ticking while disconnected (and restarts from zero on reconnect).
+        if let Some(since) = self.connected_since {
+            self.runtime_at_disconnect = Some(since.elapsed());
+        }
         self.toast(ToastKind::Error, format!("disconnected ({})", reason));
     }
 
@@ -1385,6 +1457,26 @@ impl App {
                         // "published" while disconnected would be a lie the
                         // pit crew acts on. Warn that it is queued instead.
                         if self.connected {
+                            // Local echo: the NT4 server never sends a
+                            // client's own publish back to it (verified
+                            // against ntcore), so without this the tree and
+                            // inspector would keep showing the pre-edit
+                            // value forever even though the write landed on
+                            // the robot. Apply optimistically; the engine
+                            // then verifies the write with a read-back
+                            // (NtUpdate::PublishVerified).
+                            let server_ts = self
+                                .store
+                                .topics
+                                .get(&topic)
+                                .and_then(|t| t.last_server_ts)
+                                .unwrap_or(0);
+                            self.store.apply_value(
+                                &topic,
+                                v.clone(),
+                                server_ts,
+                                std::time::Instant::now(),
+                            );
                             self.toast(
                                 ToastKind::Success,
                                 format!("published {} = {}", topic, v.format()),
@@ -1468,14 +1560,13 @@ impl App {
         self.target = target.clone();
         // The new target is (almost always) a different robot: keeping the
         // old store would render the previous robot's ghost topics, frozen
-        // values and wrong topic count — and first/last_server_ts from two
-        // servers would make UPTIME meaningless. Start clean; the watchlist
+        // values and wrong topic count. Start clean; the watchlist
         // survives, globs re-expand as the new robot publishes, and stale
         // explicit pins simply show "-" until re-announced (or forever for
         // topics this robot never has — acceptable, visible as a dead card).
         self.store.topics.clear();
-        self.first_server_ts = None;
-        self.last_server_ts = None;
+        self.connected_since = None;
+        self.runtime_at_disconnect = None;
         self.last_value_at = None;
         self.tree_cursor = 0;
         self.clamp_watchlist_cursor();
