@@ -839,29 +839,81 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     let ncols = visible.len().max(1);
     let col_w = ((inner.width as usize) / ncols).max(10);
 
+    // Column width as the render loop uses it (last visible column absorbs
+    // the remainder) — card heights depend on width, so scroll-into-view
+    // must measure with the same numbers the painter will use.
+    let col_width = |ci: usize| -> usize {
+        if ci == ncols - 1 {
+            (inner.width as usize).saturating_sub(ci * col_w)
+        } else {
+            col_w.saturating_sub(1)
+        }
+    };
+
+    // Vertical scroll-into-view for the cursor's card (renderer-owned,
+    // the vertical counterpart of the column scroll above): the focused
+    // column's first rendered card index adjusts so the cursor's card is
+    // on screen. Other columns render from their top — their tails clip,
+    // and become reachable when the cursor enters them (which resets the
+    // offset; see handle_watchlist).
+    let cur_vis = visible
+        .iter()
+        .position(|(s, c)| app.watchlist_cursor >= *s && app.watchlist_cursor < s + c);
+    let v_off = cur_vis
+        .map(|ci| {
+            let (start, count) = visible[ci];
+            let hs: Vec<usize> = (start..start + count)
+                .map(|idx| card_total_height(app, &cells[idx], col_width(ci)) as usize)
+                .collect();
+            let pane = inner.height as usize;
+            let cur_off = (app.watchlist_cursor - start).min(count.saturating_sub(1));
+            let mut v = app.watchlist_vscroll.min(cur_off);
+            // Pull the offset back up while the cursor's card stays visible
+            // (cursor moved up, or the column shrank — pins dismissed, a
+            // value losing lines), then push it down until it fits (cursor
+            // moved down into the fold). A card taller than the pane ends
+            // top-aligned: the painter renders it clipped to the pane.
+            while v > 0 && hs[v - 1..=cur_off].iter().sum::<usize>() <= pane {
+                v -= 1;
+            }
+            while v < cur_off && hs[v..cur_off].iter().sum::<usize>() + hs[cur_off] > pane {
+                v += 1;
+            }
+            app.watchlist_vscroll = v;
+            v
+        })
+        .unwrap_or(0);
+
     for (ci, (start, count)) in visible.iter().enumerate() {
         let x = inner.x + (ci * col_w) as u16;
-        let w = if ci == ncols - 1 {
-            inner.width.saturating_sub((ci * col_w) as u16)
-        } else {
-            (col_w as u16).saturating_sub(1)
-        };
+        let w = col_width(ci) as u16;
+        let off = if Some(ci) == cur_vis { v_off } else { 0 };
         let mut y = inner.y;
-        for j in 0..*count {
+        for j in off..*count {
             let idx = start + j;
             let Some(topic) = cells.get(idx) else { break };
-            let h = card_total_height(app, topic, w as usize);
-            if y + h > inner.y + inner.height {
-                break; // column full (over-wide tail): clipped until scrolled
+            let full = card_total_height(app, topic, w as usize);
+            if y + full > inner.y + inner.height {
+                // Column full: render the card CLIPPED to the remaining
+                // rows (a tall cursor card must never be invisible — the
+                // exact bug this scroll fixed) and stop.
+                let rect = Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: (inner.y + inner.height - y).max(1),
+                };
+                render_card(f, app, &cells, idx, rect, focused);
+                break;
             }
             let rect = Rect {
                 x,
                 y,
                 width: w,
-                height: h,
+                height: full,
             };
             render_card(f, app, &cells, idx, rect, focused);
-            y += h;
+            y += full;
         }
     }
 }

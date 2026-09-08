@@ -8,6 +8,16 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The watchlist scrolls vertically to follow the cursor.** With more
+  pinned cards than fit in three columns, the overflow was appended to
+  the last column and silently clipped while j/k kept moving the cursor
+  down into the invisible region — pinned cards were never visible
+  again. The cursor's column now scrolls so the active card is always
+  on screen (the vertical counterpart of the existing column scroll);
+  entering a different column with h/l restarts from its top.
+
 ### Changed
 
 - **The robot on field cards is now drawn as a rectangle with a center

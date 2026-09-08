@@ -200,6 +200,12 @@ pub struct App {
     /// Scroll offset (card rows) adjusted by the renderer to keep the cursor
     /// visible; clamped defensively here too.
     pub watchlist_scroll: usize,
+    /// VERTICAL scroll into the cursor's column: index of the first
+    /// rendered card within that column (renderer-owned, mirrors
+    /// `watchlist_scroll` — the column scroll is horizontal, this is the
+    /// per-column vertical follow). Reset on column change; re-derived
+    /// every frame by scroll-into-view.
+    pub watchlist_vscroll: usize,
 
     // modes
     pub mode: Mode,
@@ -283,6 +289,7 @@ impl App {
             last_watchlist: None,
             watchlist_cursor: 0,
             watchlist_scroll: 0,
+            watchlist_vscroll: 0,
             mode: Mode::Normal,
             query: String::new(),
             search_matches: Vec::new(),
@@ -622,6 +629,7 @@ impl App {
                 self.watchlist = prev;
                 self.watchlist_cursor = 0;
                 self.watchlist_scroll = 0;
+                self.watchlist_vscroll = 0;
                 self.clamp_watchlist_cursor();
                 self.toast(ToastKind::Success, "watchlist restored");
                 self.persist_watchlist();
@@ -970,6 +978,9 @@ impl App {
                         self.unpin_topic(&topic);
                     }
                 }
+                // NOTE: the clamp can move the cursor into another column
+                // without the h/l reset below running — the renderer's
+                // scroll-into-view clamp self-corrects the v offset.
                 self.clamp_watchlist_cursor();
                 return UiAction::None;
             }
@@ -1024,6 +1035,15 @@ impl App {
             _ => {}
         }
         self.watchlist_cursor = c;
+        let new_col = cols
+            .iter()
+            .position(|(s, cnt)| c >= *s && c < s + cnt)
+            .unwrap_or(0);
+        if new_col != cur_col {
+            // Column change: the vertical follow restarts from the top of
+            // the newly entered column.
+            self.watchlist_vscroll = 0;
+        }
         UiAction::None
     }
 
@@ -1146,6 +1166,7 @@ impl App {
             .collect();
         self.watchlist_cursor = 0;
         self.watchlist_scroll = 0;
+        self.watchlist_vscroll = 0;
         self.focus = Focus::Watchlist;
         let n = self.watchlist_cells().len();
         if replaced > 0 {
@@ -1281,6 +1302,7 @@ impl App {
                 self.watchlist.clear();
                 self.watchlist_cursor = 0;
                 self.watchlist_scroll = 0;
+                self.watchlist_vscroll = 0;
                 self.toast(
                     ToastKind::Success,
                     format!("watchlist cleared ({} card(s)) — restore available", n),

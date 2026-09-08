@@ -21,7 +21,7 @@
 //! toggle) to a scratch file so the developer's real config.json is never
 //! touched.
 
-use crate::app::{App, MatrixSource, Mode, UiAction};
+use crate::app::{App, Focus, MatrixSource, Mode, UiAction};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{backend::TestBackend, Terminal};
 use riont_nt4::ClientCommand;
@@ -50,9 +50,13 @@ struct Tui {
 
 impl Tui {
     fn new() -> Self {
+        Self::with_size(120, 36)
+    }
+
+    fn with_size(cols: u16, rows: u16) -> Self {
         hermetic_config();
         let app = App::new_test("127.0.0.1:5814".into());
-        let term = Terminal::new(TestBackend::new(120, 36)).expect("test backend");
+        let term = Terminal::new(TestBackend::new(cols, rows)).expect("test backend");
         Tui { app, term }
     }
 
@@ -845,5 +849,80 @@ fn robot_glyph_snapshots() {
             "\u{289c}\u{2840}\u{2810}\u{2801}\u{2871}\u{2801}",
             "\u{2808}\u{2812}\u{281c}"
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist vertical scroll (many pins: the cursor must never leave view)
+// ---------------------------------------------------------------------------
+
+/// Regression: with more pinned cards than fit in three columns, the
+/// overflow was appended to the last column and silently CLIPPED while
+/// j/k kept moving the cursor down into the invisible region — cards the
+/// operator pinned were never visible again. The watchlist now scrolls
+/// vertically to keep the cursor's card on screen.
+#[test]
+fn watchlist_scrolls_to_keep_the_cursor_card_visible() {
+    let mut t = Tui::with_size(120, 16); // ~3 cards per column
+    t.connect();
+    t.app.watchlist = (0..12)
+        .map(|i| MatrixSource::Topic(format!("Grp/Topic{}", i)))
+        .collect();
+    t.app.clamp_watchlist_cursor();
+    t.app.focus = Focus::Watchlist; // j/k/G must drive the watchlist
+    t.app.toasts.clear(); // the connect toast would overlay the pane
+
+    // Card titles render as "┌ Grp/TopicN " in the watchlist (the tree
+    // shows the same names in a different row format, so anchor on the
+    // card border, and count occurrences per line).
+    let card_titles = |t: &mut Tui| {
+        // Two cards share a text line (side-by-side columns), so count
+        // title OCCURRENCES, not lines.
+        t.text()
+            .lines()
+            .flat_map(|l| {
+                l.match_indices("┌ Grp/Topic")
+                    .map(|(i, _)| i)
+                    .collect::<Vec<_>>()
+            })
+            .count()
+    };
+
+    let before = card_titles(&mut t);
+    // 6 full cards + the clipped top border of the 7th (bottom-edge
+    // cards render partially instead of vanishing).
+    assert_eq!(before, 7, "2 columns × 3 cards visible");
+
+    // Jump to the LAST pinned card: it must scroll into view.
+    t.key(KeyCode::Char('G'));
+    assert!(
+        t.text().contains("┌ Grp/Topic11 "),
+        "last card must scroll into view:\n{}",
+        t.text()
+    );
+
+    // And back to the first: no stale offset.
+    t.key(KeyCode::Char('g'));
+    assert!(
+        t.text().contains("┌ Grp/Topic0 "),
+        "first card must scroll back into view:\n{}",
+        t.text()
+    );
+
+    // h/l into the other column restarts its vertical follow from the top.
+    t.key(KeyCode::Char('h'));
+    assert!(
+        t.text().contains("┌ Grp/Topic0 "),
+        "entering column 1 shows its top again:\n{}",
+        t.text()
+    );
+
+    // j one step at a time across the fold: the followed card is visible.
+    t.app.watchlist_cursor = 7;
+    t.key(KeyCode::Char('j'));
+    assert!(
+        t.text().contains("┌ Grp/Topic8 "),
+        "card 8 must be visible after stepping onto it:\n{}",
+        t.text()
     );
 }
