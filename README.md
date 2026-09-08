@@ -72,7 +72,13 @@ Command palette (`:`) — a fuzzy action runner over every command:
 ## Field visualization
 
 A pinned topic whose value is a robot pose renders as a braille top-down
-field with a live robot marker and a pose trail.
+field with a live robot marker and a pose trail. The robot is drawn as a
+rectangle footprint with a center orientation arrow (inside the frame);
+the footprint size comes from `config.json` (`field.robot_length_m` /
+`field.robot_width_m`, meters, defaults 0.9 × 0.9). Small cards adapt:
+the full rectangle+arrow is drawn while it spans enough braille dots to
+read, then a rect+tick, then a compact chevron — always keeping position
+and heading accurate.
 
 - **Auto-detected, conservatively:** only exact Limelight pose topics
   (`botpose`, `botpose_wpiblue`, `botpose_wpired`, `botpose_orb_*`, any

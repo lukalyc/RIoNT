@@ -73,6 +73,13 @@ pub struct FieldSettings {
     /// individual cards remain the default.
     #[serde(default)]
     pub overlay_topics: Vec<String>,
+    /// Robot footprint in meters (length along the heading, width
+    /// across), drawn as a rectangle with a center orientation arrow on
+    /// field cards. Bumpers included if you want the true footprint.
+    #[serde(default = "default_robot_length_m")]
+    pub robot_length_m: f64,
+    #[serde(default = "default_robot_width_m")]
+    pub robot_width_m: f64,
 }
 
 fn default_length_m() -> f64 {
@@ -87,6 +94,14 @@ fn default_map() -> String {
     "2026-rebuilt".into()
 }
 
+fn default_robot_length_m() -> f64 {
+    0.9
+}
+
+fn default_robot_width_m() -> f64 {
+    0.9
+}
+
 impl Default for FieldSettings {
     fn default() -> Self {
         FieldSettings {
@@ -99,6 +114,8 @@ impl Default for FieldSettings {
             walls_file: None,
             force_pose_topics: Vec::new(),
             overlay_topics: Vec::new(),
+            robot_length_m: default_robot_length_m(),
+            robot_width_m: default_robot_width_m(),
         }
     }
 }
@@ -251,7 +268,20 @@ mod tests {
                 .expect("minimal config must parse");
         assert_eq!(cfg.field.length_m, 16.54);
         assert_eq!(cfg.field.width_m, 8.21);
+        assert_eq!(cfg.field.robot_length_m, 0.9);
+        assert_eq!(cfg.field.robot_width_m, 0.9);
         assert_eq!(cfg.last_target.as_deref(), Some("10.1.18.2"));
+    }
+
+    #[test]
+    fn robot_footprint_is_configurable() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"field": {"alliance": "blue", "robot_length_m": 0.78,
+                        "robot_width_m": 0.62}}"#,
+        )
+        .expect("robot footprint keys must parse");
+        assert_eq!(cfg.field.robot_length_m, 0.78);
+        assert_eq!(cfg.field.robot_width_m, 0.62);
     }
 
     #[test]

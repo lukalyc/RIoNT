@@ -755,3 +755,95 @@ fn preset_digit_loads_watchlist_from_config_presets() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Robot glyph (field-card robot marker)
+// ---------------------------------------------------------------------------
+
+/// The size ladder, frozen: rect+arrow while the footprint spans >= 8
+/// braille dots, rect+tick down to 3.5, chevron below (operator's pick —
+/// see `robot_style_for`).
+#[test]
+fn robot_style_ladder() {
+    use crate::ui::robot_style_for;
+    // dots = robot_length_m * dots-per-meter.
+    assert_eq!(robot_style_for(10.0), "A");
+    assert_eq!(robot_style_for(8.0), "A");
+    assert_eq!(robot_style_for(7.9), "B");
+    assert_eq!(robot_style_for(5.2), "B"); // their small-card screenshot
+    assert_eq!(robot_style_for(3.5), "B");
+    assert_eq!(robot_style_for(3.4), "E");
+    assert_eq!(robot_style_for(2.7), "E"); // dpm 3.0 × 0.9 m robot
+}
+
+/// Render one robot glyph alone on a blank canvas; returns the trimmed
+/// text rows (the actual braille the canvas emits).
+fn render_glyph(style: &str, dpm: f64) -> Vec<String> {
+    use ratatui::{style::Color, symbols::Marker, widgets::canvas::Canvas};
+    let (cols, rows) = (12usize, 5usize);
+    let mut term = Terminal::new(TestBackend::new(cols as u16, rows as u16)).expect("backend");
+    term.draw(|f| {
+        let w = f.area().width as f64;
+        let h = f.area().height as f64;
+        let canvas = Canvas::default()
+            .x_bounds([0.0, w * 2.0 / dpm])
+            .y_bounds([0.0, h * 4.0 / dpm])
+            .marker(Marker::Braille)
+            .paint(|ctx| {
+                crate::ui::draw_robot_style(
+                    ctx,
+                    (w * 2.0 / 2.0 / dpm, h * 4.0 / 2.0 / dpm),
+                    30f64.to_radians(),
+                    Color::Cyan,
+                    0.9,
+                    0.9,
+                    style,
+                );
+            });
+        f.render_widget(canvas, f.area());
+    })
+    .expect("draw");
+    let buf = term.backend().buffer();
+    (0..rows)
+        .map(|y| {
+            (0..cols)
+                .map(|x| buf.content[y * cols + x].symbol().to_string())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Snapshot of the surviving glyphs at the sizes from the design review
+/// (heading 30°, 0.9 × 0.9 m robot). If one of these breaks, the glyph
+/// changed — re-review it visually before updating the strings.
+#[test]
+fn robot_glyph_snapshots() {
+    // Print the actual glyphs once if the snapshot drifts:
+    // cargo test robot_glyph_snapshots -- --nocapture
+    for style in ["B", "E"] {
+        let dpm = if style == "B" { 5.2 } else { 3.0 };
+        println!("{style} @ {dpm}: {:?}", render_glyph(style, dpm));
+    }
+    // B — rect + center->front tick, at the small-card resolution.
+    assert_eq!(
+        render_glyph("B", 5.2),
+        vec![
+            "\u{2864}\u{28c0}",
+            "\u{283c}\u{28d0}\u{28a1}\u{2803}",
+            "\u{2801}"
+        ]
+    );
+    // E — chevron, at the extra-small resolution.
+    assert_eq!(render_glyph("E", 3.0), vec!["\u{2820}\u{28b2}\u{2803}"]);
+    // A — rect + arrow (head folding back INSIDE the frame), normal card.
+    assert_eq!(
+        render_glyph("A", 9.0),
+        vec![
+            "\u{2870}\u{2831}\u{28e6}\u{28c0}",
+            "\u{289c}\u{2840}\u{2810}\u{2801}\u{2871}\u{2801}",
+            "\u{2808}\u{2812}\u{281c}"
+        ]
+    );
+}

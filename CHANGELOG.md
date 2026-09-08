@@ -8,6 +8,19 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Changed
+
+- **The robot on field cards is now drawn as a rectangle with a center
+  orientation arrow** (was: a triangle). The arrow stays inside the
+  footprint — center to the front-edge midpoint with a small folding
+  head. The footprint size is configurable — `field.robot_length_m` /
+  `field.robot_width_m` in `~/.config/riont/config.json` (defaults
+  0.9 × 0.9 m; include bumpers if you want the true footprint). Small
+  cards draw an adaptive compact glyph: the full rectangle+arrow needs
+  ~8 braille dots of footprint to read; below that RIONT steps down to
+  rect+tick, then to a chevron, always keeping position and heading
+  accurate.
+
 ### Fixed
 
 - **CODE no longer reads STOPPED while the robot code is running.** The

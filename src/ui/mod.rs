@@ -1105,6 +1105,14 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
         .y_bounds([by0, by1])
         .marker(Marker::Braille)
         .paint(|ctx| {
+            // Braille dots per meter (a cell is 2 dots wide, 4 tall); the
+            // robot glyph's detail level keys off this.
+            let dpm = {
+                let span_x = (bx1 - bx0).max(1e-6);
+                let span_y = (by1 - by0).max(1e-6);
+                (2.0 * area.width.max(1) as f64 / span_x)
+                    .min(4.0 * area.height.max(1) as f64 / span_y)
+            };
             // Game-line marks sit behind the walls, dimmer still.
             for mark in &app.field_map.marks {
                 for seg in mark.windows(2) {
@@ -1162,34 +1170,129 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
             }
             for m in members {
                 if let Some(r) = &m.reading {
-                    let robot = (fx(r.x), r.y);
-                    let (hdx, hdy) = r.radians.sin_cos();
-                    let tip = (robot.0 + 0.6 * hdx, robot.1 + 0.6 * hdy);
-                    let base_l = (
-                        robot.0 - 0.25 * hdx - 0.3 * hdy,
-                        robot.1 - 0.25 * hdy + 0.3 * hdx,
+                    draw_robot(
+                        ctx,
+                        (fx(r.x), r.y),
+                        r.radians,
+                        m.color,
+                        app.config.field.robot_length_m,
+                        app.config.field.robot_width_m,
+                        dpm,
                     );
-                    let base_r = (
-                        robot.0 - 0.25 * hdx + 0.3 * hdy,
-                        robot.1 - 0.25 * hdy - 0.3 * hdx,
-                    );
-                    for (a, b) in [(tip, base_l), (base_l, base_r), (base_r, tip)] {
-                        ctx.draw(&CanvasLine {
-                            x1: a.0,
-                            y1: a.1,
-                            x2: b.0,
-                            y2: b.1,
-                            color: m.color,
-                        });
-                    }
-                    ctx.draw(&Points {
-                        coords: &[robot],
-                        color: m.color,
-                    });
                 }
             }
         });
     f.render_widget(canvas, area);
+}
+
+/// Draw one robot on the braille canvas: a rectangle footprint (size from
+/// config, rotated to the heading) with a center orientation arrow,
+/// glyph style chosen from the canvas resolution (see `robot_style_for`).
+fn draw_robot(
+    ctx: &mut ratatui::widgets::canvas::Context,
+    c: (f64, f64),
+    rad: f64,
+    color: Color,
+    len: f64,
+    wid: f64,
+    dpm: f64,
+) {
+    draw_robot_style(ctx, c, rad, color, len, wid, robot_style_for(len * dpm));
+}
+
+/// The glyph ladder, chosen by how many braille dots the configured
+/// footprint spans on the canvas (dots = robot_length_m × dots-per-meter):
+/// full rect+arrow while it reads, rect+tick one step down, and the
+/// chevron below 3.5 dots — where an outlined rectangle would collapse
+/// to an uninterpretable blob (operator's pick, see the style catalog in
+/// tests_tui).
+pub(crate) fn robot_style_for(dots: f64) -> &'static str {
+    if dots >= 8.0 {
+        "A"
+    } else if dots >= 3.5 {
+        "B"
+    } else {
+        "E"
+    }
+}
+
+/// Draw one robot glyph in the named style: A rect+arrow, B rect+tick,
+/// E chevron (the styles that survived the design review). Styles are
+/// normally chosen by [`robot_style_for`]; the explicit form exists for
+/// the visual-catalog test.
+pub(crate) fn draw_robot_style(
+    ctx: &mut ratatui::widgets::canvas::Context,
+    c: (f64, f64),
+    rad: f64,
+    color: Color,
+    len: f64,
+    wid: f64,
+    style: &str,
+) {
+    let (hdx, hdy) = rad.sin_cos(); // heading unit vector
+    let (pdx, pdy) = (-hdy, hdx); // perpendicular (across the robot)
+                                  // Point at (forward fl, across fw) meters from the center.
+    let at = |fl: f64, fw: f64| (c.0 + hdx * fl + pdx * fw, c.1 + hdy * fl + pdy * fw);
+    let seg = |ctx: &mut ratatui::widgets::canvas::Context, a: (f64, f64), b: (f64, f64)| {
+        ctx.draw(&CanvasLine {
+            x1: a.0,
+            y1: a.1,
+            x2: b.0,
+            y2: b.1,
+            color,
+        });
+    };
+
+    // Corner-ordered footprint (fl: ±len/2, fw: ±wid/2).
+    let rect = [
+        at(len / 2.0, -wid / 2.0),
+        at(len / 2.0, wid / 2.0),
+        at(-len / 2.0, wid / 2.0),
+        at(-len / 2.0, -wid / 2.0),
+    ];
+
+    match style {
+        // A: rectangle outline + center arrow, all WITHIN the footprint:
+        // the arrow runs from the center to the front-edge midpoint, with
+        // a small arrowhead folding back from the tip (operator request:
+        // the arrow must not poke outside the robot frame).
+        "A" => {
+            for w in rect.windows(2) {
+                seg(ctx, w[0], w[1]);
+            }
+            seg(ctx, rect[3], rect[0]);
+            let tip = at(len / 2.0, 0.0);
+            seg(ctx, c, tip);
+            let w1 = at(len / 2.0 - 0.15 * len, 0.25 * wid);
+            let w2 = at(len / 2.0 - 0.15 * len, -0.25 * wid);
+            seg(ctx, w1, tip);
+            seg(ctx, w2, tip);
+        }
+        // B: rectangle outline + forward tick from center to the front
+        // edge midpoint (no room for an arrowhead).
+        "B" => {
+            for w in rect.windows(2) {
+                seg(ctx, w[0], w[1]);
+            }
+            seg(ctx, rect[3], rect[0]);
+            seg(ctx, c, at(len / 2.0, 0.0));
+        }
+        // C/D (cross, dot+ray) lost the design review and are gone.
+        // E: chevron — arrowhead wings only, sized to the robot width.
+        "E" => {
+            let tip = at(len / 2.0, 0.0);
+            seg(ctx, at(-len / 2.0, 0.4 * wid), tip);
+            seg(ctx, at(-len / 2.0, -0.4 * wid), tip);
+        }
+        // Unknown style: fall back to the rect+tick glyph (never silent).
+        _ => {
+            for w in rect.windows(2) {
+                seg(ctx, w[0], w[1]);
+            }
+            seg(ctx, rect[3], rect[0]);
+            seg(ctx, c, at(len / 2.0, 0.0));
+        }
+    }
 }
 
 /// Enlarged field view: a near-fullscreen popup with just the field and
