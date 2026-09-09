@@ -93,14 +93,19 @@ impl Tui {
 
     /// Feed a batch of topic values through the normal update intake.
     fn feed(&mut self, batch: Vec<(&str, NtValue)>) {
-        let now = std::time::Instant::now();
-        self.app.apply_values(
+        self.feed_owned(
             batch
                 .into_iter()
-                .map(|(n, v)| (n.to_string(), v, 1_000))
-                .collect(),
-            now,
+                .map(|(n, v)| (n.to_string(), v))
+                .collect::<Vec<_>>(),
         );
+    }
+
+    /// Same as [`Self::feed`] with owned names (built-in loops).
+    fn feed_owned(&mut self, batch: Vec<(String, NtValue)>) {
+        let now = std::time::Instant::now();
+        self.app
+            .apply_values(batch.into_iter().map(|(n, v)| (n, v, 1_000)).collect(), now);
     }
 
     fn feed_battery(&mut self) {
@@ -889,9 +894,9 @@ fn watchlist_scrolls_to_keep_the_cursor_card_visible() {
     };
 
     let before = card_titles(&mut t);
-    // 6 full cards + the clipped top border of the 7th (bottom-edge
-    // cards render partially instead of vanishing).
-    assert_eq!(before, 7, "2 columns × 3 cards visible");
+    // Loose pins fill columns to the brim; three columns are visible at
+    // this size (3 cards each) with the tail h-scrolled.
+    assert_eq!(before, 9, "3 visible columns × 3 cards");
 
     // Jump to the LAST pinned card: it must scroll into view.
     t.key(KeyCode::Char('G'));
@@ -925,4 +930,101 @@ fn watchlist_scrolls_to_keep_the_cursor_card_visible() {
         "card 8 must be visible after stepping onto it:\n{}",
         t.text()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist grouping (folder pins get their own columns with headers)
+// ---------------------------------------------------------------------------
+
+/// Folder pins group into their own columns: a `─ Name (count) ─` header
+/// tops each group's column, and two folders sit side by side (left |
+/// right) instead of their cards jumbling together.
+#[test]
+fn watchlist_folder_pins_get_group_columns_with_headers() {
+    let mut t = Tui::with_size(120, 16);
+    t.connect();
+    t.feed(vec![
+        ("LeftShooter/RPM", NtValue::Double(1.0)),
+        ("LeftShooter/Current", NtValue::Double(2.0)),
+        ("RightShooter/RPM", NtValue::Double(3.0)),
+        ("RightShooter/Current", NtValue::Double(4.0)),
+    ]);
+    t.app.watchlist = vec![
+        MatrixSource::Glob("LeftShooter".into()),
+        MatrixSource::Glob("RightShooter".into()),
+    ];
+    t.app.focus = Focus::Watchlist;
+    t.app.toasts.clear();
+
+    let text = t.text();
+    assert!(text.contains("LeftShooter (2)"), "{text}");
+    assert!(text.contains("RightShooter (2)"), "{text}");
+    // Both headers on the SAME row, Left column before Right column.
+    let row = text
+        .lines()
+        .find(|l| l.contains("LeftShooter (2)"))
+        .expect("header row");
+    let lpos = row.find("LeftShooter (2)").expect("left header");
+    let rpos = row
+        .find("RightShooter (2)")
+        .expect("right header on same row");
+    assert!(rpos > lpos, "{row}");
+    // The right column renders RIGHT cards (no left spillover above them).
+    assert!(text.contains("┌ RightShooter/RPM"), "{text}");
+}
+
+/// A group bigger than one column continues in the next column WITH its
+/// header repeated — cards after a column break keep their context.
+#[test]
+fn watchlist_group_overflow_repeats_the_header() {
+    let mut t = Tui::with_size(120, 16);
+    t.connect();
+    t.feed_owned(
+        (0..5)
+            .map(|i| (format!("BigFolder/T{}", i), NtValue::Double(i as f64)))
+            .collect(),
+    );
+    t.app.watchlist = vec![MatrixSource::Glob("BigFolder".into())];
+    t.app.focus = Focus::Watchlist;
+    t.app.toasts.clear();
+
+    let text = t.text();
+    // 5 four-row cards at this height: 2 per column under the header ->
+    // three columns, each topped by the group's header.
+    assert_eq!(
+        text.matches("BigFolder (5)").count(),
+        3,
+        "header repeats on EVERY overflow column: {text}"
+    );
+}
+
+/// Mixed content: a folder group keeps its own header-topped column and
+/// adjacent loose pins pack header-less — no cross-contamination either
+/// way. And the header count is LIVE: a topic published under the glob
+/// mid-session bumps `n` on the next frame.
+#[test]
+fn watchlist_mixed_pins_and_live_group_count() {
+    let mut t = Tui::with_size(120, 16);
+    t.connect();
+    t.feed(vec![
+        ("LeftShooter/RPM", NtValue::Double(1.0)),
+        ("LeftShooter/Current", NtValue::Double(2.0)),
+        ("Misc/Value", NtValue::Double(3.0)),
+    ]);
+    t.app.watchlist = vec![
+        MatrixSource::Glob("LeftShooter".into()),
+        MatrixSource::Topic("Misc/Value".into()),
+    ];
+    t.app.focus = Focus::Watchlist;
+    t.app.toasts.clear();
+
+    let text = t.text();
+    assert!(text.contains("LeftShooter (2)"), "{text}");
+    // Loose pin shares the second column, header-less.
+    assert!(text.contains("┌ Misc/Value"), "{text}");
+
+    // Robot publishes a new topic under the folder: the count is live.
+    t.feed(vec![("LeftShooter/Velocity", NtValue::Double(5.0))]);
+    let text = t.text();
+    assert!(text.contains("LeftShooter (3)"), "{text}");
 }

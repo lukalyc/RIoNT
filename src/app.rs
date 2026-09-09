@@ -647,16 +647,26 @@ impl App {
     /// re-expanded on every call, so topics the robot publishes later are
     /// adopted automatically.
     pub fn watchlist_cells(&self) -> Vec<String> {
+        // The overlay-collapse filter lives in `watchlist_cells_grouped`;
+        // navigation and rendering key off the plain topic list.
+        self.watchlist_cells_grouped()
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
+    }
+
+    /// Pinned topics in display order WITH their folder-pin tag (see
+    /// `watchlist_cells_raw`), overlay groups collapsed. Drives the
+    /// watchlist renderer's group columns.
+    pub fn watchlist_cells_grouped(&self) -> Vec<(String, Option<String>)> {
         let raw = self.watchlist_cells_raw();
-        // Overlay groups collapse into ONE cell (the first member), so
-        // navigation and rendering treat the composite as a single card.
         let mut overlay_seen = false;
         raw.into_iter()
-            .filter(|c| {
+            .filter(|(c, _)| {
                 if self.is_field_card(c) && self.config.field.overlay_topics.iter().any(|t| t == c)
                 {
                     if overlay_seen {
-                        return false; // later members hide inside the composite
+                        return false;
                     }
                     overlay_seen = true;
                 }
@@ -665,22 +675,25 @@ impl App {
             .collect()
     }
 
-    /// Pinned topics in display order WITHOUT overlay collapsing.
-    fn watchlist_cells_raw(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+    /// Pinned topics in display order WITHOUT overlay collapsing, each
+    /// tagged with the folder pin (glob prefix) it came from — None for
+    /// explicitly pinned topics. The grouping drives the watchlist's
+    /// per-folder columns and headers.
+    fn watchlist_cells_raw(&self) -> Vec<(String, Option<String>)> {
+        let mut out: Vec<(String, Option<String>)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for src in &self.watchlist {
             match src {
                 MatrixSource::Topic(t) => {
                     if seen.insert(t.clone()) {
-                        out.push(t.clone());
+                        out.push((t.clone(), None));
                     }
                 }
                 MatrixSource::Glob(prefix) => {
                     let pfx = format!("{}/", prefix);
                     for n in self.store.sorted_names() {
                         if n.starts_with(&pfx) && seen.insert(n.clone()) {
-                            out.push(n);
+                            out.push((n, Some(prefix.clone())));
                         }
                     }
                 }
@@ -702,25 +715,11 @@ impl App {
         }
         self.watchlist_cells_raw()
             .into_iter()
+            .map(|(c, _)| c)
             .filter(|c| {
                 self.is_field_card(c) && self.config.field.overlay_topics.iter().any(|t| t == c)
             })
             .collect()
-    }
-
-    /// Card-column packing rule shared with the renderer: 1 column for
-    /// 1-4 cards, 2 for 5-12, 3 beyond — never wider than `width` allows.
-    pub fn watch_cols(n: usize, width: usize) -> usize {
-        let by_count = if n <= 4 {
-            1
-        } else if n <= 12 {
-            2
-        } else {
-            3
-        };
-        let min_card_w = 14usize;
-        let by_width = (width / min_card_w).max(1);
-        by_count.min(by_width).max(1)
     }
 
     /// Terminal geometry approximation of the watchlist canvas, shared with
@@ -731,6 +730,9 @@ impl App {
         let avail_h = h.saturating_sub(5);
         let avail_w = (w * 65 / 100).saturating_sub(2);
         crate::ui::watch_columns(self, avail_h, avail_w)
+            .into_iter()
+            .map(|c| (c.start, c.count))
+            .collect()
     }
 
     /// The topic the current focus points at (tree cursor or watchlist card).

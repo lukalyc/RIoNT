@@ -13,8 +13,12 @@ configure.
   publish rates; fuzzy search with `/` jumps straight to a topic.
 - **Inspector dock** — passively mirrors the cursor's full path, type,
   flags, rate, Δ and raw value. No navigation needed to read metadata.
-- **Watchlist** — `Space` pins any topic as a live card, sized by type.
-  Cards pack top-down, then across, up to three columns; repacking is live.
+- **Watchlist** — `Space` pins any topic as a live card, sized by type;
+  a directory pin becomes a GROUP: its cards get their own column under
+  a `─ Folder (n) ─` header (n = live topic count), overflowing into
+  further header-topped columns when large. Ungrouped cards pack
+  top-down; columns beyond the pane scroll in with h/l; repacking is
+  live.
 - **Field visualization** — robot pose topics render as a braille top-down
   field with live position, heading and trail (details below).
 - **Inline editing** — `e` publishes a new bool / int / double / string

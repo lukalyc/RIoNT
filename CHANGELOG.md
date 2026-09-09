@@ -8,6 +8,19 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Added
+
+- **Watchlist groups folder pins into their own columns.** Pinning two
+  folders (e.g. `LeftShooterHead` and `RightShooterHead`) no longer
+  jumbles their cards together: each folder's cards live in their own
+  column under a muted `─ Folder (n) ─` header, where n is the live
+  topic count (grows as the robot publishes new topics under the
+  folder). A folder bigger than one column continues in the next with
+  its header repeated. Columns beyond the pane width — long loose-pin
+  lists too — scroll horizontally with h/l (the old hard 3-column cap
+  with its clipped tail is gone). Explicitly pinned single topics keep
+  the fill-to-brim packing (no header).
+
 ### Fixed
 
 - **The watchlist scrolls vertically to follow the cursor.** With more

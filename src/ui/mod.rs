@@ -721,46 +721,89 @@ fn card_total_height(app: &App, topic: &str, width: usize) -> u16 {
     (3 + vlines) as u16 // 2 borders + value line(s) + meta row
 }
 
-/// Height-first column packing, shared with the app layer for navigation:
-/// column 1 is filled to 100% of the available height (using each card's
-/// real rendered height) before column 2 is instantiated, up to `max_cols`
-/// columns. Returns (start_index, count) per column. Recomputed on resize —
-/// the caller passes the current inner size.
-pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<(usize, usize)> {
-    let cells = app.watchlist_cells();
-    let n = cells.len();
+/// One packed watchlist column: a contiguous slice of the pinned cells
+/// plus, for folder-pin groups, the header identity (folder name and the
+/// LIVE group size — the number of topics the glob currently expands to,
+/// which grows as the robot publishes).
+pub struct WatchColumn {
+    pub start: usize,
+    pub count: usize,
+    pub group: Option<(String, usize)>,
+}
+
+/// Height-first column packing, shared with the app layer for navigation.
+/// Folder-pin groups (consecutive cards from the same glob) each get
+/// their OWN column topped by a header row — `Left Shooter Head` takes
+/// the left column, `Right Shooter Head` the next — and a group bigger
+/// than one column continues in the next column with its header repeated.
+/// Explicit topic pins (no group) pack together like they always did:
+/// fill the column to 100% of the available height before starting the
+/// next one. Every group starts a new column. Recomputed on resize — the
+/// caller passes the current inner size.
+pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<WatchColumn> {
+    let grouped = app.watchlist_cells_grouped();
+    let n = grouped.len();
     if n == 0 || avail_h == 0 || avail_w == 0 {
         return Vec::new();
     }
-    let max_cols = App::watch_cols(n, avail_w as usize);
-    let nominal_w = (avail_w as usize / max_cols).max(10);
-    let mut cols: Vec<(usize, usize)> = Vec::new();
+    // Card heights (and thus the per-column budget) are measured at a
+    // nominal width assuming up to three visible columns. When a group
+    // overflows into more columns than that, real columns are NARROWER
+    // than nominal, so heights are underestimated — the painter clips the
+    // overflow and the cursor's column self-corrects via vscroll, so this
+    // only mildly affects how much lands in each column (matters only for
+    // line-wrapping array values).
+    let runs = {
+        let mut r = 1usize;
+        for w in grouped.windows(2) {
+            if w[0].1 != w[1].1 {
+                r += 1;
+            }
+        }
+        r
+    };
+    let by_width = (avail_w as usize / 14).max(1);
+    let denom = runs.min(3).min(by_width).max(1);
+    let nominal_w = ((avail_w as usize) / denom).max(10);
+
+    let mut cols: Vec<WatchColumn> = Vec::new();
     let mut i = 0;
     while i < n {
-        let mut count = 0usize;
-        let mut used = 0u16;
-        while i + count < n {
-            let h = card_total_height(app, &cells[i + count], nominal_w);
-            if used + h > avail_h && count > 0 {
-                break;
+        // Run extent: consecutive cells with the same group tag.
+        let tag = grouped[i].1.clone();
+        let mut run_end = i;
+        while run_end < n && grouped[run_end].1 == tag {
+            run_end += 1;
+        }
+        let run_len = run_end - i;
+        let header_rows: u16 = if tag.is_some() { 1 } else { 0 };
+        let budget = avail_h.saturating_sub(header_rows).max(1);
+
+        // Chunk the run into columns. A group chunk repeats the header;
+        // ungrouped cells fill each column to the brim.
+        let mut j = i;
+        while j < run_end {
+            let mut count = 0usize;
+            let mut used = 0u16;
+            while j + count < run_end {
+                let h = card_total_height(app, &grouped[j + count].0, nominal_w);
+                if used + h > budget && count > 0 {
+                    break;
+                }
+                used += h;
+                count += 1;
             }
-            used += h;
-            count += 1;
-        }
-        if count == 0 {
-            count = 1; // single card taller than the pane: keep progress
-        }
-        cols.push((i, count));
-        i += count;
-        if cols.len() >= max_cols {
-            if i < n {
-                // Width cap reached: navigation-wise the tail lives in the
-                // last column (the renderer scrolls columns into view).
-                let last = cols.last_mut().unwrap();
-                last.1 += n - i;
+            if count == 0 {
+                count = 1; // single card taller than the column: keep progress
             }
-            break;
+            cols.push(WatchColumn {
+                start: j,
+                count,
+                group: tag.clone().map(|name| (name, run_len)),
+            });
+            j += count;
         }
+        i = run_end;
     }
     cols
 }
@@ -820,7 +863,7 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     // Keep the cursor's column visible (renderer-owned column scroll).
     let cur_col = cols_layout
         .iter()
-        .position(|(s, c)| app.watchlist_cursor >= *s && app.watchlist_cursor < s + c)
+        .position(|c| app.watchlist_cursor >= c.start && app.watchlist_cursor < c.start + c.count)
         .unwrap_or(0);
     if cur_col < app.watchlist_scroll {
         app.watchlist_scroll = cur_col;
@@ -831,10 +874,9 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
         .watchlist_scroll
         .min(cols_layout.len().saturating_sub(max_vis));
 
-    let visible: Vec<(usize, usize)> = cols_layout[app.watchlist_scroll..]
+    let visible: Vec<&WatchColumn> = cols_layout[app.watchlist_scroll..]
         .iter()
         .take(max_vis)
-        .copied()
         .collect();
     let ncols = visible.len().max(1);
     let col_w = ((inner.width as usize) / ncols).max(10);
@@ -849,6 +891,8 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
             col_w.saturating_sub(1)
         }
     };
+    // Rows a column's header costs before its first card (0 = no header).
+    let header_rows = |col: &WatchColumn| -> u16 { u16::from(col.group.is_some()) };
 
     // Vertical scroll-into-view for the cursor's card (renderer-owned,
     // the vertical counterpart of the column scroll above): the focused
@@ -856,16 +900,17 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
     // on screen. Other columns render from their top — their tails clip,
     // and become reachable when the cursor enters them (which resets the
     // offset; see handle_watchlist).
-    let cur_vis = visible
-        .iter()
-        .position(|(s, c)| app.watchlist_cursor >= *s && app.watchlist_cursor < s + c);
+    let cur_vis = visible.iter().position(|col| {
+        app.watchlist_cursor >= col.start && app.watchlist_cursor < col.start + col.count
+    });
     let v_off = cur_vis
         .map(|ci| {
-            let (start, count) = visible[ci];
+            let col = visible[ci];
+            let (start, count) = (col.start, col.count);
             let hs: Vec<usize> = (start..start + count)
                 .map(|idx| card_total_height(app, &cells[idx], col_width(ci)) as usize)
                 .collect();
-            let pane = inner.height as usize;
+            let pane = (inner.height - header_rows(col)) as usize;
             let cur_off = (app.watchlist_cursor - start).min(count.saturating_sub(1));
             let mut v = app.watchlist_vscroll.min(cur_off);
             // Pull the offset back up while the cursor's card stays visible
@@ -884,12 +929,32 @@ fn draw_watchlist(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .unwrap_or(0);
 
-    for (ci, (start, count)) in visible.iter().enumerate() {
+    for (ci, col) in visible.iter().enumerate() {
+        let (start, count) = (col.start, col.count);
         let x = inner.x + (ci * col_w) as u16;
         let w = col_width(ci) as u16;
-        let off = if Some(ci) == cur_vis { v_off } else { 0 };
+        // Group header: one muted row `─ Name (count) ─────`, then cards.
         let mut y = inner.y;
-        for j in off..*count {
+        if let Some((name, total)) = &col.group {
+            let header = format!("─ {} ({}) ", name, total);
+            let width = w as usize;
+            let chars: Vec<char> = header.chars().collect();
+            let line: String = (0..width)
+                .map(|k| chars.get(k).copied().unwrap_or('─'))
+                .collect();
+            f.render_widget(
+                Paragraph::new(Line::from(muted(line))),
+                Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+        let off = if Some(ci) == cur_vis { v_off } else { 0 };
+        for j in off..count {
             let idx = start + j;
             let Some(topic) = cells.get(idx) else { break };
             let full = card_total_height(app, topic, w as usize);
