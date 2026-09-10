@@ -527,6 +527,48 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
             dim("Value: "),
             plain(ellipsize_left(&val, w.saturating_sub(8))),
         ]));
+
+        // Undecoded struct topic (wire type binary, `type_str` `struct:*`):
+        // instead of a bare `<N bytes>`, show the advertised structSchema
+        // flattened to its leaf fields plus a hex view of the raw bytes.
+        // Decoded structs (e.g. struct:Pose2d) keep the plain value display.
+        if t.type_str
+            .as_deref()
+            .is_some_and(|s| s.starts_with("struct:"))
+        {
+            if let Some(riont_store::store::NtValue::Raw(bytes)) = &t.current {
+                if let Some(schema) = t.struct_schema.as_deref() {
+                    let leaves = riont_store::schema::parse_struct_schema(schema);
+                    if leaves.is_empty() {
+                        // Malformed/empty schema: degrade to the raw string.
+                        lines.push(Line::from(vec![
+                            dim("Schema: "),
+                            dim(ellipsize_left(schema, w.saturating_sub(8))),
+                        ]));
+                    } else {
+                        // Cap the leaf list so a wide schema can't push the
+                        // hex view below the dock's fixed pane.
+                        const MAX_SCHEMA_LEAVES: usize = 8;
+                        for leaf in leaves.iter().take(MAX_SCHEMA_LEAVES) {
+                            lines.push(Line::from(vec![
+                                plain("  "),
+                                plain(&leaf.name),
+                                dim(format!(" {}", leaf.ty)),
+                            ]));
+                        }
+                        if leaves.len() > MAX_SCHEMA_LEAVES {
+                            lines.push(Line::from(dim(format!(
+                                "  … {} more fields",
+                                leaves.len() - MAX_SCHEMA_LEAVES
+                            ))));
+                        }
+                    }
+                }
+                for row in hex_rows(bytes) {
+                    lines.push(Line::from(dim(row)));
+                }
+            }
+        }
     }
 
     f.render_widget(Paragraph::new(lines), inner);
@@ -539,6 +581,28 @@ fn ellipsize_left(s: &str, width: usize) -> String {
         return s.to_string();
     }
     format!("…{}", s.chars().skip(n - width + 1).collect::<String>())
+}
+
+/// Hex-dump rows for the inspector dock: 8 bytes per row with a 4-digit
+/// offset column, capped at [`HEX_VIEW_CAP`] bytes with a trailing
+/// ellipsis row when truncated. The dock's `Paragraph` clips anything
+/// past its fixed pane height — rows must never force a scroll or wrap.
+const HEX_VIEW_CAP: usize = 64;
+
+fn hex_rows(bytes: &[u8]) -> Vec<String> {
+    let shown = &bytes[..bytes.len().min(HEX_VIEW_CAP)];
+    let mut rows = Vec::new();
+    for (i, chunk) in shown.chunks(8).enumerate() {
+        let mut row = format!("{:04x} ", i * 8);
+        for b in chunk {
+            row.push_str(&format!("{:02x} ", b));
+        }
+        rows.push(row.trim_end().to_string());
+    }
+    if bytes.len() > HEX_VIEW_CAP {
+        rows.push(format!("… +{} bytes", bytes.len() - HEX_VIEW_CAP));
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -593,9 +657,14 @@ fn value_lines(v: &riont_store::store::NtValue, width: usize) -> Vec<Line<'stati
             ellipsize(&v.format(), w),
             Style::default().fg(AMBER),
         ))],
-        // Decoded struct:Pose2d: string-like single-line card, warm amber
-        // like strings (format already carries the units/degree sign).
-        V::Pose2d { .. } => vec![Line::from(Span::styled(
+        // Decoded structs (Pose2d, ChassisSpeeds, Twist2d,
+        // SwerveModuleStates): string-like single-line card, warm amber
+        // like strings — each variant's `format()` carries its NAMED
+        // fields (vx / dx / per-module angle+speed), not `<N bytes>`.
+        V::Pose2d { .. }
+        | V::ChassisSpeeds { .. }
+        | V::Twist2d { .. }
+        | V::SwerveModuleStates(_) => vec![Line::from(Span::styled(
             ellipsize(&v.format(), w),
             Style::default().fg(AMBER),
         ))],
@@ -746,13 +815,19 @@ pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<WatchColumn> 
     if n == 0 || avail_h == 0 || avail_w == 0 {
         return Vec::new();
     }
-    // Card heights (and thus the per-column budget) are measured at a
-    // nominal width assuming up to three visible columns. When a group
-    // overflows into more columns than that, real columns are NARROWER
-    // than nominal, so heights are underestimated — the painter clips the
-    // overflow and the cursor's column self-corrects via vscroll, so this
-    // only mildly affects how much lands in each column (matters only for
-    // line-wrapping array values).
+    // Card heights depend on the width they are measured at, and that
+    // width depends on how many columns the packing itself produces: the
+    // renderer splits the pane evenly among the (up to three) visible
+    // columns and lets the last one absorb the remainder, so a non-last
+    // column renders at avail_w/ncols - 1. A single pass at a guessed
+    // width gets this wrong when a group overflows into MORE columns than
+    // the guess assumes: cards are measured WIDER than their real column,
+    // heights come out too small, and the painter clips the overflow.
+    // Instead, iterate: pack, count the resulting columns, re-pack at the
+    // width those columns really render at. The count only grows (narrower
+    // measurement -> taller cards -> at least as many columns) and denom
+    // caps at 3, so two refinement passes always converge; loose-pin
+    // packing is unchanged whenever the first pass is already stable.
     let runs = {
         let mut r = 1usize;
         for w in grouped.windows(2) {
@@ -762,48 +837,71 @@ pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<WatchColumn> 
         }
         r
     };
-    let by_width = (avail_w as usize / 14).max(1);
-    let denom = runs.min(3).min(by_width).max(1);
-    let nominal_w = ((avail_w as usize) / denom).max(10);
-
-    let mut cols: Vec<WatchColumn> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        // Run extent: consecutive cells with the same group tag.
-        let tag = grouped[i].1.clone();
-        let mut run_end = i;
-        while run_end < n && grouped[run_end].1 == tag {
-            run_end += 1;
+    // Narrowest width any column renders at for `d` visible columns —
+    // the exact numbers draw_watchlist's col_width() uses (non-last
+    // columns render one cell narrower; the last absorbs the remainder
+    // and is never narrower, so measuring here is conservative).
+    let measure_w = |d: usize| -> usize {
+        if d <= 1 {
+            avail_w as usize
+        } else {
+            ((avail_w as usize) / d).max(10).saturating_sub(1)
         }
-        let run_len = run_end - i;
-        let header_rows: u16 = if tag.is_some() { 1 } else { 0 };
-        let budget = avail_h.saturating_sub(header_rows).max(1);
+    };
+    let pack = |w: usize| -> Vec<WatchColumn> {
+        let mut cols: Vec<WatchColumn> = Vec::new();
+        let mut i = 0;
+        while i < n {
+            // Run extent: consecutive cells with the same group tag.
+            let tag = grouped[i].1.clone();
+            let mut run_end = i;
+            while run_end < n && grouped[run_end].1 == tag {
+                run_end += 1;
+            }
+            let run_len = run_end - i;
+            let header_rows: u16 = if tag.is_some() { 1 } else { 0 };
+            let budget = avail_h.saturating_sub(header_rows).max(1);
 
-        // Chunk the run into columns. A group chunk repeats the header;
-        // ungrouped cells fill each column to the brim.
-        let mut j = i;
-        while j < run_end {
-            let mut count = 0usize;
-            let mut used = 0u16;
-            while j + count < run_end {
-                let h = card_total_height(app, &grouped[j + count].0, nominal_w);
-                if used + h > budget && count > 0 {
-                    break;
+            // Chunk the run into columns. A group chunk repeats the header;
+            // ungrouped cells fill each column to the brim.
+            let mut j = i;
+            while j < run_end {
+                let mut count = 0usize;
+                let mut used = 0u16;
+                while j + count < run_end {
+                    let h = card_total_height(app, &grouped[j + count].0, w);
+                    if used + h > budget && count > 0 {
+                        break;
+                    }
+                    used += h;
+                    count += 1;
                 }
-                used += h;
-                count += 1;
+                if count == 0 {
+                    count = 1; // single card taller than the column: keep progress
+                }
+                cols.push(WatchColumn {
+                    start: j,
+                    count,
+                    group: tag.clone().map(|name| (name, run_len)),
+                });
+                j += count;
             }
-            if count == 0 {
-                count = 1; // single card taller than the column: keep progress
-            }
-            cols.push(WatchColumn {
-                start: j,
-                count,
-                group: tag.clone().map(|name| (name, run_len)),
-            });
-            j += count;
+            i = run_end;
         }
-        i = run_end;
+        cols
+    };
+
+    // Seed the guess with the group-run count (a lower bound on columns:
+    // every group starts its own), then refine to the real column count.
+    let mut denom = runs.clamp(1, 3);
+    let mut cols = pack(measure_w(denom));
+    for _ in 0..2 {
+        let actual = cols.len().clamp(1, 3);
+        if actual == denom {
+            break;
+        }
+        denom = actual;
+        cols = pack(measure_w(denom));
     }
     cols
 }
@@ -1217,6 +1315,10 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
     bx1 += sx;
     by0 += sy;
     by1 += sy;
+    // Exactly-one-topic rule (documented in CHANGELOG): a single decoded
+    // struct:SwerveModuleStates topic feeds ALL field cards; zero or
+    // multiple candidates draw no vectors rather than an ambiguous one.
+    let swerve = swerve_module_states_ui(app);
     let canvas = Canvas::default()
         .x_bounds([bx0, bx1])
         .y_bounds([by0, by1])
@@ -1287,15 +1389,43 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
             }
             for m in members {
                 if let Some(r) = &m.reading {
+                    // Mirror the heading with the position. The glyph's
+                    // heading unit vector is (sin θ, cos θ) — f64::sin_cos
+                    // returns (sin, cos) — so mirroring x → length − x
+                    // negates it: the mirrored heading is −θ, and red view
+                    // at stored heading θ must render EXACTLY like blue
+                    // view at −θ (with the position mirrored). NOTE: with
+                    // a (cos θ, sin θ) convention this would be π − θ; the
+                    // π−θ form here would point the arrow backwards.
+                    let rad = if red { -r.radians } else { r.radians };
                     draw_robot(
                         ctx,
                         (fx(r.x), r.y),
-                        r.radians,
+                        rad,
                         m.color,
                         app.config.field.robot_length_m,
                         app.config.field.robot_width_m,
                         dpm,
                     );
+                    // Swerve module vectors ride on every field card when
+                    // exactly one decoded SwerveModuleStates topic exists
+                    // (see `swerve_module_states_ui`). They are drawn in
+                    // the SAME mirrored frame as the robot glyph.
+                    if let Some(states) = &swerve {
+                        draw_swerve_vectors(
+                            ctx,
+                            (fx(r.x), r.y),
+                            rad,
+                            states,
+                            m.color,
+                            &GlyphFrame {
+                                len: app.config.field.robot_length_m,
+                                wid: app.config.field.robot_width_m,
+                                dpm,
+                                mirror: red,
+                            },
+                        );
+                    }
                 }
             }
         });
@@ -1410,6 +1540,116 @@ pub(crate) fn draw_robot_style(
             seg(ctx, c, at(len / 2.0, 0.0));
         }
     }
+}
+
+/// Decoded `struct:SwerveModuleStates` feeding the field-card module
+/// vectors. Design decision (see CHANGELOG): if EXACTLY ONE such topic
+/// exists in the store it feeds ALL field cards; with zero or multiple
+/// candidates no vectors are drawn (an ambiguous source would put
+/// somebody else's wheel speeds on your robot).
+fn swerve_module_states_ui(app: &App) -> Option<Vec<(f64, f64)>> {
+    let mut found: Option<Vec<(f64, f64)>> = None;
+    let mut count = 0usize;
+    for t in app.store.topics.values() {
+        if let Some(riont_store::store::NtValue::SwerveModuleStates(states)) = &t.current {
+            count += 1;
+            found = Some(states.clone());
+        }
+    }
+    if count == 1 {
+        found
+    } else {
+        None
+    }
+}
+
+/// Swerve vector tuning: drawn length = |speed| × SCALE meters, clamped
+/// to MAX; below FLOOR m/s the vector is too short to read and is
+/// skipped. 0.15 m per m/s keeps full-speed drives within the footprint
+/// scale on a normal card.
+const SWERVE_VEC_SCALE: f64 = 0.15;
+const SWERVE_VEC_MAX: f64 = 0.5;
+const SWERVE_VEC_FLOOR_MPS: f64 = 0.02;
+
+/// Footprint + canvas context for one field-card robot render, shared by
+/// the glyph and its module vectors (everything is drawn in the same
+/// mirrored frame).
+struct GlyphFrame {
+    len: f64,
+    wid: f64,
+    dpm: f64,
+    mirror: bool,
+}
+
+/// Draw one robot's swerve module vectors: a line from each footprint
+/// corner along the module's steer direction, length proportional to
+/// speed (see the SWERVE_VEC_* tuning consts). Everything is drawn in
+/// the same MIRRORED frame the robot glyph uses (`rad` is already the
+/// mirrored heading, `c` the mirrored position). Skipped entirely when
+/// the footprint renders as the compact chevron (see `robot_style_for`:
+/// too small to read).
+fn draw_swerve_vectors(
+    ctx: &mut ratatui::widgets::canvas::Context,
+    c: (f64, f64),
+    rad: f64,
+    states: &[(f64, f64)],
+    color: Color,
+    frame: &GlyphFrame,
+) {
+    if robot_style_for(frame.len * frame.dpm) == "E" {
+        return;
+    }
+    for (a, b) in swerve_vector_segments(c, rad, states, frame.len, frame.wid, frame.mirror) {
+        ctx.draw(&CanvasLine {
+            x1: a.0,
+            y1: a.1,
+            x2: b.0,
+            y2: b.1,
+            color,
+        });
+    }
+}
+
+/// Footprint-corner module-vector segments in the (possibly mirrored)
+/// render frame: one ((x1, y1), (x2, y2)) per drawable module. Module
+/// states come in WPILib order (FL, FR, RL, RR); module angles are
+/// ROBOT-RELATIVE, so the world direction is heading ± angle — and that
+/// sign FLIPS under the x-mirror (mirroring reverses relative angles,
+/// θ + a → π − θ − a), as does the left/right corner axis. Extra
+/// modules (up to the 8-module decode cap) have no corner and are not
+/// drawn. Pure geometry, unit-tested against the mirror identity.
+fn swerve_vector_segments(
+    c: (f64, f64),
+    rad: f64,
+    states: &[(f64, f64)],
+    len: f64,
+    wid: f64,
+    mirror: bool,
+) -> Vec<((f64, f64), (f64, f64))> {
+    let (hdx, hdy) = rad.sin_cos(); // (already mirrored) heading unit vector
+                                    // Perpendicular across the robot; under the x-mirror the left/right
+                                    // sides swap, so the axis flips sign.
+    let (pdx, pdy) = if mirror { (hdy, -hdx) } else { (-hdy, hdx) };
+    let at = |fl: f64, fw: f64| (c.0 + hdx * fl + pdx * fw, c.1 + hdy * fl + pdy * fw);
+    // WPILib module order FL, FR, RL, RR mapped onto the footprint
+    // corners (fl: ±len/2 forward, fw: ±wid/2 left+).
+    let corners = [
+        at(len / 2.0, wid / 2.0),   // front left
+        at(len / 2.0, -wid / 2.0),  // front right
+        at(-len / 2.0, wid / 2.0),  // rear left
+        at(-len / 2.0, -wid / 2.0), // rear right
+    ];
+    corners
+        .iter()
+        .zip(states)
+        .filter(|(_, (_, speed))| speed.abs() >= SWERVE_VEC_FLOOR_MPS)
+        .map(|(corner, (angle, speed))| {
+            let vlen = (speed.abs() * SWERVE_VEC_SCALE).clamp(SWERVE_VEC_FLOOR_MPS, SWERVE_VEC_MAX);
+            let dir = if mirror { rad - angle } else { rad + angle };
+            let (ddx, ddy) = dir.sin_cos();
+            (*corner, (corner.0 + ddx * vlen, corner.1 + ddy * vlen))
+        })
+        .collect()
 }
 
 /// Enlarged field view: a near-fullscreen popup with just the field and
@@ -1935,6 +2175,38 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::short_reason;
+
+    /// The swerve-vector mirror identity: rendering the SAME robot (same
+    /// module states, same order) in red view — mirrored position,
+    /// mirrored heading −θ (the glyph heading unit vector is
+    /// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
+    /// negates), `mirror = true` — must place each vector segment at the
+    /// x-mirror of the blue-view segment at (x, y, θ). Exact
+    /// real-coordinate check; the Canvas rasterizer's ±1-dot floor
+    /// asymmetry is a display artifact, not geometry.
+    #[test]
+    fn swerve_vector_mirror_geometry_matches_mirrored_blue() {
+        use super::swerve_vector_segments;
+        use std::f64::consts::PI;
+        let length = 16.541;
+        let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
+        let modules = [(0.3f64, 4.0f64), (-0.5, 4.0), (1.2, 4.0), (0.0, 0.0)];
+
+        let blue = swerve_vector_segments((x, y), theta, &modules, 0.9, 0.9, false);
+        // Zero-speed module is skipped; the rest draw.
+        assert_eq!(blue.len(), 3);
+
+        // Red view of the SAME robot: the renderer passes the mirrored
+        // position and the mirrored heading −θ with mirror = true.
+        let red = swerve_vector_segments((length - x, y), -theta, &modules, 0.9, 0.9, true);
+        assert_eq!(red.len(), blue.len());
+        for ((b1, b2), (r1, r2)) in blue.iter().zip(&red) {
+            assert!((length - r1.0 - b1.0).abs() < 1e-9, "{b1:?} vs {r1:?}");
+            assert!((r1.1 - b1.1).abs() < 1e-9, "{b1:?} vs {r1:?}");
+            assert!((length - r2.0 - b2.0).abs() < 1e-9, "{b2:?} vs {r2:?}");
+            assert!((r2.1 - b2.1).abs() < 1e-9, "{b2:?} vs {r2:?}");
+        }
+    }
 
     #[test]
     fn short_reason_maps_common_failures() {

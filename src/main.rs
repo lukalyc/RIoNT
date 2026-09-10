@@ -60,7 +60,63 @@ fn resolve_target(arg: Option<String>) -> String {
     }
 }
 
+/// Append one panic record to `<dir>/riont-debug.log` — the same file the
+/// NT4 engine appends its session logs to (see `riont_nt4`'s private
+/// `open_debug_log` for the name + OpenOptions-append pattern; duplicated
+/// here because the engine fn is private). Every operation is fallible-
+/// guarded: this runs from the panic hook and must never panic itself.
+pub(crate) fn append_panic_evidence(
+    dir: &std::path::Path,
+    msg: &str,
+    location: &str,
+    backtrace: &str,
+) {
+    use std::io::Write;
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("riont-debug.log"))
+    else {
+        return; // cannot open the log: silently give up, still delegate
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(f, "=== panic at {} (unix s) ===", secs);
+    let _ = writeln!(f, "message: {}", msg);
+    let _ = writeln!(f, "location: {}", location);
+    let _ = writeln!(f, "backtrace:\n{}", backtrace);
+}
+
+/// A double-clicked .exe on Windows opens a console that closes the
+/// instant the process dies, so a panic message on stderr is lost
+/// forever (a real field crash went undiagnosed for exactly this
+/// reason). Record the evidence to riont-debug.log FIRST — message,
+/// source location, backtrace — then delegate to the default hook so
+/// stderr behavior is unchanged where a console does exist.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+        append_panic_evidence(std::path::Path::new("."), &msg, &location, &backtrace);
+        default_hook(info);
+    }));
+}
+
 fn main() -> anyhow::Result<()> {
+    install_panic_hook();
     trace("main start");
     let cli = <Cli as clap::Parser>::parse();
     let target = resolve_target(cli.target);

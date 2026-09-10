@@ -10,6 +10,28 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Added
 
+- **Swerve module vectors on the field card.** When the robot publishes
+  a `struct:SwerveModuleStates` topic, field cards draw each module's
+  vector from the footprint corner: direction = steer angle relative to
+  the robot heading, length proportional to wheel speed. Drawn when
+  exactly one such topic exists — zero or several, and nothing is drawn
+  (RIONT never guesses which to trust). Skipped on cards too small to
+  read.
+- **Struct decoding expansion.** `struct:ChassisSpeeds` (vx, vy, omega),
+  `struct:Twist2d` (dx, dy, dtheta) and `struct:SwerveModuleStates`
+  (per-module angle + speed) now render as named fields instead of
+  `<N bytes>`, alongside the existing `struct:Pose2d` decoder. Malformed
+  payloads degrade to the raw-bytes display.
+- **Undecoded struct topics are readable in the inspector dock.** Topics
+  typed `struct:…` that RIONT cannot decode (a custom WPILib struct, not
+  Pose2d) used to show only `<N bytes>`. The dock now also lists the
+  robot's advertised `structSchema` flattened to its leaf fields (name
+  + type, in declaration order) and a hex view of the raw bytes — 8 per
+  row with byte offsets, first 64 bytes — so a payload can be checked
+  against the robot's struct definition on the bench. A malformed or
+  missing schema falls back to the raw string; decoded structs keep
+  their plain value display.
+
 - **Watchlist groups folder pins into their own columns.** Pinning two
   folders (e.g. `LeftShooterHead` and `RightShooterHead`) no longer
   jumbles their cards together: each folder's cards live in their own
@@ -23,6 +45,25 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Fixed
 
+- **Red-alliance field view mirrors the robot heading.** The mirrored
+  view flipped the robot's POSITION but not its heading, so red-view
+  operators saw the robot facing the wrong way. Red view at heading θ
+  now renders exactly like blue view at −θ.
+
+- **Crashes leave evidence behind instead of vanishing.** When RIONT
+  panicked on a double-clicked Windows launch, the console closed with
+  the panic message and the crash was undiagnosable. Panics are now
+  appended to `riont-debug.log` (next to the session logs the NT4
+  engine already writes) with the message, source location and a
+  backtrace, then still printed to stderr as before.
+- **Watchlist folder columns no longer overflow with long array
+  values.** A folder whose cards hold long arrays (values that wrap at
+  narrow widths) had its cards height-measured at a wider width than
+  the columns actually render at, so more cards were packed into a
+  column than fit and the bottom cards were cut off. Card heights are
+  now measured at the width the columns really render at (the packing
+  iterates until the column count and the measurement agree), so every
+  card in a column fits.
 - **The watchlist scrolls vertically to follow the cursor.** With more
   pinned cards than fit in three columns, the overflow was appended to
   the last column and silently clipped while j/k kept moving the cursor

@@ -607,6 +607,99 @@ fn edit_rejects_non_writable_topic_types() {
 }
 
 // ---------------------------------------------------------------------------
+// Inspector dock: undecoded struct topics (schema + hex view)
+// ---------------------------------------------------------------------------
+
+/// Simulate TopicMeta intake for an undecoded struct topic: the wire type
+/// is binary (`struct:*` type_str) with an advertised structSchema.
+fn feed_struct_topic(t: &mut Tui, name: &str, schema: Option<&str>, bytes: Vec<u8>) {
+    t.connect();
+    let topic = t.app.store.ensure(name);
+    topic.type_str = Some("struct:SwerveModuleState".into());
+    topic.struct_schema = schema.map(|s| s.to_string());
+    t.feed_owned(vec![(name.to_string(), NtValue::Raw(bytes))]);
+    t.jump("SwerveModuleState");
+}
+
+#[test]
+fn inspector_undecoded_struct_shows_schema_leaves_and_hex() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        Some(
+            "SwerveModuleState{angle:Rotation2d{radians:double}, \
+              speedMetersPerSecond:double}",
+        ),
+        vec![
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+        ],
+    );
+    let text = t.text();
+    // The dock must show parsed schema leaves (flattened, ordered) ...
+    assert!(text.contains("radians"), "{text}");
+    assert!(text.contains("speedMetersPerSecond"), "{text}");
+    // ... the <N bytes> value line ...
+    assert!(text.contains("<24 bytes>"), "{text}");
+    // ... and the hex view: offset column + the raw byte pairs.
+    assert!(text.contains("0000 11 22 33 44 55 66 77 88"), "{text}");
+    assert!(text.contains("0008 99 aa bb cc dd ee ff 01"), "{text}");
+}
+
+#[test]
+fn inspector_undecoded_struct_without_schema_still_shows_hex() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        None,
+        vec![0xde, 0xad, 0xbe, 0xef],
+    );
+    let text = t.text();
+    assert!(text.contains("0000 de ad be ef"), "{text}");
+    assert!(!text.contains("Schema:"), "{text}");
+}
+
+#[test]
+fn inspector_malformed_schema_degrades_to_raw_string() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        Some("SwerveModuleState{angle:Rotation2d"),
+        vec![0x01],
+    );
+    let text = t.text();
+    // Raw schema string, no leaf lines, and the hex view still present.
+    // (The line is left-ellipsized to the dock width: assert on the tail.)
+    assert!(text.contains("angle:Rotation2d"), "{text}");
+    assert!(!text.contains("radians"), "{text}");
+    assert!(text.contains("0000 01"), "{text}");
+}
+
+#[test]
+fn inspector_decoded_struct_keeps_plain_value_no_hex() {
+    let mut t = Tui::new();
+    t.connect();
+    // struct:Pose2d decodes on intake (see pose::decode_pose2d) — the
+    // dock must keep the plain pose display, no schema/hex section.
+    let topic = t.app.store.ensure("odometry/pose");
+    topic.type_str = Some("struct:Pose2d".into());
+    topic.struct_schema =
+        Some("Pose2d{Translation2d{x:double, y:double}, Rotation2d{radians:double}}".into());
+    let mut b = Vec::new();
+    b.extend_from_slice(&1.5f64.to_le_bytes());
+    b.extend_from_slice(&(-2.5f64).to_le_bytes());
+    b.extend_from_slice(&0.0f64.to_le_bytes());
+    t.feed_owned(vec![("odometry/pose".to_string(), NtValue::Raw(b))]);
+    t.jump("odometry/pose");
+    let text = t.text();
+    assert!(text.contains("(1.50 m, -2.50 m"), "{text}");
+    assert!(!text.contains("0000 "), "{text}");
+}
+
+// ---------------------------------------------------------------------------
 // Command palette
 // ---------------------------------------------------------------------------
 
@@ -827,6 +920,15 @@ fn render_glyph(style: &str, dpm: f64) -> Vec<String> {
 /// Snapshot of the surviving glyphs at the sizes from the design review
 /// (heading 30°, 0.9 × 0.9 m robot). If one of these breaks, the glyph
 /// changed — re-review it visually before updating the strings.
+/// The field-card pane text (everything from the watchlist border right).
+fn pane(t: &mut Tui) -> String {
+    t.text()
+        .lines()
+        .map(|l| l.chars().skip(43).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn robot_glyph_snapshots() {
     // Print the actual glyphs once if the snapshot drifts:
@@ -854,6 +956,245 @@ fn robot_glyph_snapshots() {
             "\u{289c}\u{2840}\u{2810}\u{2801}\u{2871}\u{2801}",
             "\u{2808}\u{2812}\u{281c}"
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Field-card alliance mirror + swerve vectors + struct decoding expansion
+// ---------------------------------------------------------------------------
+
+/// Braille-only content of the rendered screen (the field canvas): colors
+/// and chrome ignored, so renders compare as glyph geometry.
+fn braille_screen(t: &mut Tui) -> Vec<String> {
+    t.render()
+        .into_iter()
+        .map(|l| {
+            l.chars()
+                .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                .collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Feed a Limelight-style botpose (x, y, yaw_deg) at the given topic.
+fn feed_botpose(t: &mut Tui, name: &str, x: f64, y: f64, yaw_deg: f64) {
+    t.feed(vec![(
+        name,
+        NtValue::DoubleArray(vec![x, y, 0.0, 0.0, 0.0, yaw_deg]),
+    )]);
+}
+
+/// Feed raw struct bytes for `name`, tagging the topic with `type_str`
+/// first so the store's struct decode dispatch picks it up (in prod the
+/// announce metadata carries it; here the wire path is simulated).
+fn feed_raw_struct(t: &mut Tui, name: &str, type_str: &str, bytes: Vec<u8>) {
+    t.app.store.ensure(name).type_str = Some(type_str.into());
+    t.feed(vec![(name, NtValue::Raw(bytes))]);
+}
+
+fn swerve_payload(states: &[(f64, f64)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (a, s) in states {
+        b.extend_from_slice(&a.to_le_bytes());
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
+}
+
+/// Regression: red view at stored heading θ must render the robot glyph
+/// EXACTLY like blue view at −θ (the glyph's heading unit vector is
+/// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
+/// negates; a (cos θ, sin θ) convention would give π − θ). The robot
+/// POSITION was always mirrored via fx(); the heading was not, so
+/// red-view robots faced the wrong way.
+#[test]
+fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
+    use std::f64::consts::PI;
+    let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
+    let (robot_len, robot_wid) = (4.0f64, 4.0f64);
+
+    // Robot-only dot set: pane chars that differ once the pose estimate is
+    // emptied (sticky card keeps rendering; only the glyph vanishes; the
+    // trail dot is mirrored identically in both scenes).
+    let robot_dots = |t: &mut Tui| {
+        let with = pane(t);
+        t.feed(vec![(
+            "SmartDashboard/botpose_wpiblue",
+            NtValue::DoubleArray(vec![]),
+        )]);
+        let without = pane(t);
+        let mut dots: Vec<(usize, usize)> = Vec::new();
+        let is_braille = |l: &str| l.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+        for (ri, (wr, br)) in with.lines().zip(without.lines()).enumerate() {
+            // Canvas rows only: the card's meta row (rate/Δ) is
+            // wall-clock dependent and carries no glyph information.
+            if !is_braille(wr) {
+                continue;
+            }
+            for (ci, (wc, bc)) in wr.chars().zip(br.chars()).enumerate() {
+                if wc != bc {
+                    dots.push((ri, ci));
+                }
+            }
+        }
+        dots.sort();
+        dots
+    };
+
+    let scene = |t: &mut Tui, px: f64, heading: f64| {
+        t.connect();
+        t.app.config.field.robot_length_m = robot_len;
+        t.app.config.field.robot_width_m = robot_wid;
+        feed_botpose(
+            t,
+            "SmartDashboard/botpose_wpiblue",
+            px,
+            y,
+            heading.to_degrees(),
+        );
+        t.pin_via_search("botpose");
+    };
+
+    let mut red = Tui::new();
+    red.app.config.field.alliance = "red".into();
+    scene(&mut red, x, theta);
+
+    let mut blue_m = Tui::new();
+    scene(&mut blue_m, x, -theta); // the apply_value below overwrites x
+                                   // with the MIRRORED position (len − x)
+    blue_m.app.store.apply_value(
+        "SmartDashboard/botpose_wpiblue",
+        NtValue::DoubleArray(vec![
+            field_len(&blue_m) - x,
+            y,
+            0.0,
+            0.0,
+            0.0,
+            (-theta).to_degrees(),
+        ]),
+        1_000,
+        std::time::Instant::now(),
+    );
+
+    let mut blue_ref = Tui::new();
+    scene(&mut blue_ref, x, theta);
+
+    let red_dots = robot_dots(&mut red);
+    let blue_mirrored_dots = robot_dots(&mut blue_m);
+    let blue_plain_dots = robot_dots(&mut blue_ref);
+
+    assert!(!blue_mirrored_dots.is_empty(), "robot glyph must render");
+    // The mirror identity.
+    assert_eq!(
+        red_dots, blue_mirrored_dots,
+        "red @ θ must equal blue @ −θ (position mirrored)"
+    );
+    // And it must be discriminative: the un-mirrored blue scene differs.
+    assert_ne!(
+        red_dots, blue_plain_dots,
+        "red @ θ must differ from blue @ θ, or the test is vacuous"
+    );
+}
+
+fn field_len(t: &Tui) -> f64 {
+    t.app.field_map.length_m
+}
+
+#[test]
+fn struct_chassis_speeds_renders_named_fields() {
+    let mut t = Tui::new();
+    t.connect();
+    let mut b = Vec::new();
+    b.extend_from_slice(&1.25f64.to_le_bytes());
+    b.extend_from_slice(&0.0f64.to_le_bytes());
+    b.extend_from_slice(&0.5f64.to_le_bytes());
+    feed_raw_struct(&mut t, "Odometry/ChassisSpeeds", "struct:ChassisSpeeds", b);
+    t.pin_via_search("ChassisSpeeds");
+    let text = t.text();
+    assert!(text.contains("vx 1.25"), "{text}");
+    assert!(!text.contains("<24 bytes>"), "{text}");
+}
+
+/// Swerve module vectors (ROADMAP 4): with exactly one decoded
+/// `struct:SwerveModuleStates` topic in the store, the field card draws
+/// each module's vector off the robot footprint corners.
+#[test]
+fn swerve_vectors_draw_on_the_field_card() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+    assert!(!baseline.is_empty());
+
+    feed_raw_struct(
+        &mut t,
+        "Swerve/ModuleStates",
+        "struct:SwerveModuleStates",
+        swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+    );
+    let with_vectors = braille_screen(&mut t);
+    assert_ne!(
+        with_vectors, baseline,
+        "module vectors must change the canvas"
+    );
+}
+
+/// The exactly-one-topic rule: with ZERO or MULTIPLE decoded
+/// SwerveModuleStates topics, no vectors are drawn (ambiguous source).
+#[test]
+fn swerve_vectors_require_exactly_one_module_states_topic() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+
+    // TWO candidate topics: the rule refuses both.
+    for name in ["Swerve/FrontStates", "Swerve/RearStates"] {
+        feed_raw_struct(
+            &mut t,
+            name,
+            "struct:SwerveModuleStates",
+            swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+        );
+    }
+    assert_eq!(
+        braille_screen(&mut t),
+        baseline,
+        "two swerve topics must draw no vectors"
+    );
+
+    // Unpin one candidate (x via the watchlist cursor — simplest: drop the
+    // second topic from the store) leaves exactly one: vectors appear.
+    t.app.store.topics.remove("Swerve/RearStates");
+    let with_vectors = braille_screen(&mut t);
+    assert_ne!(with_vectors, baseline, "one swerve topic draws vectors");
+}
+
+/// Vectors are skipped entirely when the footprint renders as the compact
+/// chevron (below the robot_style_for threshold: too small to read).
+#[test]
+fn swerve_vectors_skip_on_compact_glyphs() {
+    let mut t = Tui::new();
+    t.connect();
+    t.app.config.field.robot_length_m = 0.25;
+    t.app.config.field.robot_width_m = 0.25;
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+
+    feed_raw_struct(
+        &mut t,
+        "Swerve/ModuleStates",
+        "struct:SwerveModuleStates",
+        swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+    );
+    assert_eq!(
+        braille_screen(&mut t),
+        baseline,
+        "compact glyphs must draw no vectors"
     );
 }
 
@@ -1027,4 +1368,111 @@ fn watchlist_mixed_pins_and_live_group_count() {
     t.feed(vec![("LeftShooter/Velocity", NtValue::Double(5.0))]);
     let text = t.text();
     assert!(text.contains("LeftShooter (3)"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// Panic evidence logging (double-clicked .exe: stderr is lost forever)
+// ---------------------------------------------------------------------------
+
+/// The panic hook appends one record per panic to `<dir>/riont-debug.log`
+/// (the same file the NT4 engine appends session logs to). The helper must
+/// APPEND — a second panic in the same directory must never wipe the first
+/// one's evidence — and must tolerate an unwritable directory silently.
+#[test]
+fn panic_evidence_appends_message_location_and_backtrace_to_debug_log() {
+    let dir = std::env::temp_dir().join(format!(
+        "riont-panic-evidence-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+
+    crate::append_panic_evidence(
+        &dir,
+        "index out of bounds: in watchlist packing",
+        "src/ui/mod.rs:750:5",
+        "frame 1\nframe 2",
+    );
+    crate::append_panic_evidence(&dir, "second panic", "src/main.rs:42:1", "frame A");
+
+    let log = std::fs::read_to_string(dir.join("riont-debug.log")).expect("debug log written");
+    assert!(
+        log.contains("index out of bounds: in watchlist packing"),
+        "{log}"
+    );
+    assert!(log.contains("src/ui/mod.rs:750:5"), "{log}");
+    assert!(log.contains("frame 1\nframe 2"), "{log}");
+    assert_eq!(
+        log.matches("=== panic at").count(),
+        2,
+        "records append, never truncate: {log}"
+    );
+
+    // An unwritable target must be swallowed, not panic (the hook itself
+    // must never panic).
+    crate::append_panic_evidence(
+        std::path::Path::new("/nonexistent-riont-test-dir"),
+        "boom",
+        "x:1:1",
+        "bt",
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist width estimate (folder arrays must not overflow their columns)
+// ---------------------------------------------------------------------------
+
+/// Regression: a folder group of long double[] cards used to be
+/// height-measured at a WIDER nominal width than its real rendered
+/// columns — the group overflows into more columns than the one-pass
+/// guess assumes, heights came out too small, columns overfilled and the
+/// painter clipped the overflow cards. Packing now iterates to the real
+/// column width, so every rendered card fits its column.
+#[test]
+fn watchlist_folder_of_long_arrays_never_overflows_its_columns() {
+    let mut t = Tui::new(); // 120x36: 31 card rows under a group header
+    t.connect();
+    // 7 double[] elements render 69 chars: one line at full-pane width
+    // (69 <= 72), two lines at a half-pane column (69 > 33) — so the
+    // measured height differs between the wrong and the right width.
+    t.feed_owned(
+        (0..10)
+            .map(|i| {
+                (
+                    format!("Wrap/T{}", i),
+                    NtValue::DoubleArray(vec![1000.0; 7]),
+                )
+            })
+            .collect(),
+    );
+    t.app.watchlist = vec![MatrixSource::Glob("Wrap".into())];
+    t.app.focus = Focus::Watchlist;
+    t.app.toasts.clear();
+
+    let text = t.text();
+    for i in 0..10 {
+        assert!(
+            text.contains(&format!("┌ Wrap/T{}", i)),
+            "card {i} missing:\n{text}"
+        );
+    }
+    // Every visible card fully drawn: 10 card top-left borders plus the
+    // three pane blocks (tree, inspector, watchlist), and exactly as many
+    // bottom-right corners — a card clipped by an overfilled column
+    // renders ┌ without its ┘.
+    let tops = text.matches('┌').count();
+    let bottoms = text.matches('┘').count();
+    assert_eq!(
+        tops, bottoms,
+        "a card was clipped by an overfilled column:\n{text}"
+    );
+    assert!(
+        tops >= 13,
+        "expected 10 cards + 3 pane corners: {tops}\n{text}"
+    );
 }
