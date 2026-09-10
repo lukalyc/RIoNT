@@ -1008,21 +1008,6 @@ fn swerve_payload(states: &[(f64, f64)]) -> Vec<u8> {
 /// negates; a (cos θ, sin θ) convention would give π − θ). The robot
 /// POSITION was always mirrored via fx(); the heading was not, so
 /// red-view robots faced the wrong way.
-/// Regression: red view at stored heading θ must render the robot glyph
-/// EXACTLY like blue view at −θ (the glyph's heading unit vector is
-/// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
-/// negates; a (cos θ, sin θ) convention would give π − θ). The robot
-/// POSITION was always mirrored via fx(); the heading was not, so
-/// red-view robots faced the wrong way.
-///
-/// Method: the whole FIELD mirrors in red view (walls included), so the
-/// two scenes can never be text-equal. Instead each scene is diffed
-/// against ITSELF with the pose estimate emptied (the sticky field card
-/// keeps rendering; only the glyph disappears), isolating the robot's
-/// dot positions — those must match across the mirror identity. The test
-/// also asserts the mirror does SOMETHING (red dots ≠ blue-at-θ dots):
-/// with a 0.9 m footprint θ and −θ quantize to identical dots, so the
-/// scene uses a 4 m footprint.
 #[test]
 fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
     use std::f64::consts::PI;
@@ -1076,8 +1061,8 @@ fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
     scene(&mut red, x, theta);
 
     let mut blue_m = Tui::new();
-    scene(&mut blue_m, -theta, -theta); // position mirrored: len − x
-                                        // (feed with the mirrored x explicitly)
+    scene(&mut blue_m, x, -theta); // the apply_value below overwrites x
+                                   // with the MIRRORED position (len − x)
     blue_m.app.store.apply_value(
         "SmartDashboard/botpose_wpiblue",
         NtValue::DoubleArray(vec![

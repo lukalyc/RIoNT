@@ -32,23 +32,17 @@ season-tested reason:
 
 ### Viewing fidelity — the core investment
 
-1. **Struct decoding expansion.** Decode and display
-   `ChassisSpeeds`, `Twist2d`, and `SwerveModuleStates` instead of
-   `<N bytes>`. The schema-aware decoder already handles `struct:Pose2d`;
-   each new type is a small, well-contained addition. Decode to *see*
-   the data — visualization is optional and separate.
-2. **Raw/struct inspector.** Unknown struct types currently render as
-   `<N bytes>`. Show a hex view plus the advertised `structSchema`
-   (parsed field names/order) so the data is legible instead of
-   opaque. **Must-have** — this is the single clearest gap in topic
-   viewing today.
+1. **Struct decoding expansion.** ✅ **Done** — `ChassisSpeeds`,
+   `Twist2d`, and `SwerveModuleStates` decode to named fields (v0.8.0).
+2. **Raw/struct inspector.** ✅ **Done** — the inspector dock shows the
+   parsed `structSchema` leaves plus a hex view of raw bytes for
+   undecoded structs (v0.8.0).
 
 ### Viewing — field
 
-3. **Swerve module vectors on the field card.** Draw the four module
-   state vectors around the robot triangle when `SwerveModuleStates`
-   are available. Pure viewing of existing NT data; valuable to teams
-   even if the author never uses it.
+3. **Swerve module vectors on the field card.** ✅ **Done** — drawn
+   around the robot rectangle when `SwerveModuleStates` are available
+   (v0.8.0).
 
 ### Connection
 
@@ -79,9 +73,8 @@ season-tested reason:
    Linux) and `.github/workflows/release.yml` (Windows/Linux/macOS
    binaries attached to the GitHub release on `v*` tag push, via
    `scripts/release.sh`).
-10. **Wide-viewport harness coverage.** The 97-check suite currently
-    tests at a 120x36 viewport only; a real rendering bug already
-    escaped that way. Add wide/short layouts to the harness.
+10. **Wide-viewport harness coverage.** ✅ **Done** — the harness runs
+    wide (200x50) and short (90x20) scenarios alongside 120x36.
 
 ## Parked — revisit after a full season of use
 

@@ -10,6 +10,18 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Added
 
+- **Swerve module vectors on the field card.** When the robot publishes
+  a `struct:SwerveModuleStates` topic, field cards draw each module's
+  vector from the footprint corner: direction = steer angle relative to
+  the robot heading, length proportional to wheel speed. Drawn when
+  exactly one such topic exists — zero or several, and nothing is drawn
+  (RIONT never guesses which to trust). Skipped on cards too small to
+  read.
+- **Struct decoding expansion.** `struct:ChassisSpeeds` (vx, vy, omega),
+  `struct:Twist2d` (dx, dy, dtheta) and `struct:SwerveModuleStates`
+  (per-module angle + speed) now render as named fields instead of
+  `<N bytes>`, alongside the existing `struct:Pose2d` decoder. Malformed
+  payloads degrade to the raw-bytes display.
 - **Undecoded struct topics are readable in the inspector dock.** Topics
   typed `struct:…` that RIONT cannot decode (a custom WPILib struct, not
   Pose2d) used to show only `<N bytes>`. The dock now also lists the
