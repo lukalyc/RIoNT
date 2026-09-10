@@ -10,6 +10,16 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Added
 
+- **Undecoded struct topics are readable in the inspector dock.** Topics
+  typed `struct:…` that RIONT cannot decode (a custom WPILib struct, not
+  Pose2d) used to show only `<N bytes>`. The dock now also lists the
+  robot's advertised `structSchema` flattened to its leaf fields (name
+  + type, in declaration order) and a hex view of the raw bytes — 8 per
+  row with byte offsets, first 64 bytes — so a payload can be checked
+  against the robot's struct definition on the bench. A malformed or
+  missing schema falls back to the raw string; decoded structs keep
+  their plain value display.
+
 - **Watchlist groups folder pins into their own columns.** Pinning two
   folders (e.g. `LeftShooterHead` and `RightShooterHead`) no longer
   jumbles their cards together: each folder's cards live in their own

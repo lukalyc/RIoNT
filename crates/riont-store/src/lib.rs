@@ -6,4 +6,5 @@
 //! built on the same engine consume it.
 
 pub mod pose;
+pub mod schema;
 pub mod store;

@@ -527,6 +527,39 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
             dim("Value: "),
             plain(ellipsize_left(&val, w.saturating_sub(8))),
         ]));
+
+        // Undecoded struct topic (wire type binary, `type_str` `struct:*`):
+        // instead of a bare `<N bytes>`, show the advertised structSchema
+        // flattened to its leaf fields plus a hex view of the raw bytes.
+        // Decoded structs (e.g. struct:Pose2d) keep the plain value display.
+        if t.type_str
+            .as_deref()
+            .is_some_and(|s| s.starts_with("struct:"))
+        {
+            if let Some(riont_store::store::NtValue::Raw(bytes)) = &t.current {
+                if let Some(schema) = t.struct_schema.as_deref() {
+                    let leaves = riont_store::schema::parse_struct_schema(schema);
+                    if leaves.is_empty() {
+                        // Malformed/empty schema: degrade to the raw string.
+                        lines.push(Line::from(vec![
+                            dim("Schema: "),
+                            dim(ellipsize_left(schema, w.saturating_sub(8))),
+                        ]));
+                    } else {
+                        for leaf in &leaves {
+                            lines.push(Line::from(vec![
+                                plain("  "),
+                                plain(&leaf.name),
+                                dim(format!(" {}", leaf.ty)),
+                            ]));
+                        }
+                    }
+                }
+                for row in hex_rows(bytes) {
+                    lines.push(Line::from(dim(row)));
+                }
+            }
+        }
     }
 
     f.render_widget(Paragraph::new(lines), inner);
@@ -539,6 +572,28 @@ fn ellipsize_left(s: &str, width: usize) -> String {
         return s.to_string();
     }
     format!("…{}", s.chars().skip(n - width + 1).collect::<String>())
+}
+
+/// Hex-dump rows for the inspector dock: 8 bytes per row with a 4-digit
+/// offset column, capped at [`HEX_VIEW_CAP`] bytes with a trailing
+/// ellipsis row when truncated. The dock's `Paragraph` clips anything
+/// past its fixed pane height — rows must never force a scroll or wrap.
+const HEX_VIEW_CAP: usize = 64;
+
+fn hex_rows(bytes: &[u8]) -> Vec<String> {
+    let shown = &bytes[..bytes.len().min(HEX_VIEW_CAP)];
+    let mut rows = Vec::new();
+    for (i, chunk) in shown.chunks(8).enumerate() {
+        let mut row = format!("{:04x} ", i * 8);
+        for b in chunk {
+            row.push_str(&format!("{:02x} ", b));
+        }
+        rows.push(row.trim_end().to_string());
+    }
+    if bytes.len() > HEX_VIEW_CAP {
+        rows.push(format!("… +{} bytes", bytes.len() - HEX_VIEW_CAP));
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
