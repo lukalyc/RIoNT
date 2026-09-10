@@ -746,13 +746,19 @@ pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<WatchColumn> 
     if n == 0 || avail_h == 0 || avail_w == 0 {
         return Vec::new();
     }
-    // Card heights (and thus the per-column budget) are measured at a
-    // nominal width assuming up to three visible columns. When a group
-    // overflows into more columns than that, real columns are NARROWER
-    // than nominal, so heights are underestimated — the painter clips the
-    // overflow and the cursor's column self-corrects via vscroll, so this
-    // only mildly affects how much lands in each column (matters only for
-    // line-wrapping array values).
+    // Card heights depend on the width they are measured at, and that
+    // width depends on how many columns the packing itself produces: the
+    // renderer splits the pane evenly among the (up to three) visible
+    // columns and lets the last one absorb the remainder, so a non-last
+    // column renders at avail_w/ncols - 1. A single pass at a guessed
+    // width gets this wrong when a group overflows into MORE columns than
+    // the guess assumes: cards are measured WIDER than their real column,
+    // heights come out too small, and the painter clips the overflow.
+    // Instead, iterate: pack, count the resulting columns, re-pack at the
+    // width those columns really render at. The count only grows (narrower
+    // measurement -> taller cards -> at least as many columns) and denom
+    // caps at 3, so two refinement passes always converge; loose-pin
+    // packing is unchanged whenever the first pass is already stable.
     let runs = {
         let mut r = 1usize;
         for w in grouped.windows(2) {
@@ -762,48 +768,71 @@ pub fn watch_columns(app: &App, avail_h: u16, avail_w: u16) -> Vec<WatchColumn> 
         }
         r
     };
-    let by_width = (avail_w as usize / 14).max(1);
-    let denom = runs.min(3).min(by_width).max(1);
-    let nominal_w = ((avail_w as usize) / denom).max(10);
-
-    let mut cols: Vec<WatchColumn> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        // Run extent: consecutive cells with the same group tag.
-        let tag = grouped[i].1.clone();
-        let mut run_end = i;
-        while run_end < n && grouped[run_end].1 == tag {
-            run_end += 1;
+    // Narrowest width any column renders at for `d` visible columns —
+    // the exact numbers draw_watchlist's col_width() uses (non-last
+    // columns render one cell narrower; the last absorbs the remainder
+    // and is never narrower, so measuring here is conservative).
+    let measure_w = |d: usize| -> usize {
+        if d <= 1 {
+            avail_w as usize
+        } else {
+            ((avail_w as usize) / d).max(10).saturating_sub(1)
         }
-        let run_len = run_end - i;
-        let header_rows: u16 = if tag.is_some() { 1 } else { 0 };
-        let budget = avail_h.saturating_sub(header_rows).max(1);
+    };
+    let pack = |w: usize| -> Vec<WatchColumn> {
+        let mut cols: Vec<WatchColumn> = Vec::new();
+        let mut i = 0;
+        while i < n {
+            // Run extent: consecutive cells with the same group tag.
+            let tag = grouped[i].1.clone();
+            let mut run_end = i;
+            while run_end < n && grouped[run_end].1 == tag {
+                run_end += 1;
+            }
+            let run_len = run_end - i;
+            let header_rows: u16 = if tag.is_some() { 1 } else { 0 };
+            let budget = avail_h.saturating_sub(header_rows).max(1);
 
-        // Chunk the run into columns. A group chunk repeats the header;
-        // ungrouped cells fill each column to the brim.
-        let mut j = i;
-        while j < run_end {
-            let mut count = 0usize;
-            let mut used = 0u16;
-            while j + count < run_end {
-                let h = card_total_height(app, &grouped[j + count].0, nominal_w);
-                if used + h > budget && count > 0 {
-                    break;
+            // Chunk the run into columns. A group chunk repeats the header;
+            // ungrouped cells fill each column to the brim.
+            let mut j = i;
+            while j < run_end {
+                let mut count = 0usize;
+                let mut used = 0u16;
+                while j + count < run_end {
+                    let h = card_total_height(app, &grouped[j + count].0, w);
+                    if used + h > budget && count > 0 {
+                        break;
+                    }
+                    used += h;
+                    count += 1;
                 }
-                used += h;
-                count += 1;
+                if count == 0 {
+                    count = 1; // single card taller than the column: keep progress
+                }
+                cols.push(WatchColumn {
+                    start: j,
+                    count,
+                    group: tag.clone().map(|name| (name, run_len)),
+                });
+                j += count;
             }
-            if count == 0 {
-                count = 1; // single card taller than the column: keep progress
-            }
-            cols.push(WatchColumn {
-                start: j,
-                count,
-                group: tag.clone().map(|name| (name, run_len)),
-            });
-            j += count;
+            i = run_end;
         }
-        i = run_end;
+        cols
+    };
+
+    // Seed the guess with the group-run count (a lower bound on columns:
+    // every group starts its own), then refine to the real column count.
+    let mut denom = runs.clamp(1, 3);
+    let mut cols = pack(measure_w(denom));
+    for _ in 0..2 {
+        let actual = cols.len().clamp(1, 3);
+        if actual == denom {
+            break;
+        }
+        denom = actual;
+        cols = pack(measure_w(denom));
     }
     cols
 }

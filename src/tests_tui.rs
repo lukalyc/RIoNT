@@ -1028,3 +1028,110 @@ fn watchlist_mixed_pins_and_live_group_count() {
     let text = t.text();
     assert!(text.contains("LeftShooter (3)"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// Panic evidence logging (double-clicked .exe: stderr is lost forever)
+// ---------------------------------------------------------------------------
+
+/// The panic hook appends one record per panic to `<dir>/riont-debug.log`
+/// (the same file the NT4 engine appends session logs to). The helper must
+/// APPEND — a second panic in the same directory must never wipe the first
+/// one's evidence — and must tolerate an unwritable directory silently.
+#[test]
+fn panic_evidence_appends_message_location_and_backtrace_to_debug_log() {
+    let dir = std::env::temp_dir().join(format!(
+        "riont-panic-evidence-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+
+    crate::append_panic_evidence(
+        &dir,
+        "index out of bounds: in watchlist packing",
+        "src/ui/mod.rs:750:5",
+        "frame 1\nframe 2",
+    );
+    crate::append_panic_evidence(&dir, "second panic", "src/main.rs:42:1", "frame A");
+
+    let log = std::fs::read_to_string(dir.join("riont-debug.log")).expect("debug log written");
+    assert!(
+        log.contains("index out of bounds: in watchlist packing"),
+        "{log}"
+    );
+    assert!(log.contains("src/ui/mod.rs:750:5"), "{log}");
+    assert!(log.contains("frame 1\nframe 2"), "{log}");
+    assert_eq!(
+        log.matches("=== panic at").count(),
+        2,
+        "records append, never truncate: {log}"
+    );
+
+    // An unwritable target must be swallowed, not panic (the hook itself
+    // must never panic).
+    crate::append_panic_evidence(
+        std::path::Path::new("/nonexistent-riont-test-dir"),
+        "boom",
+        "x:1:1",
+        "bt",
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist width estimate (folder arrays must not overflow their columns)
+// ---------------------------------------------------------------------------
+
+/// Regression: a folder group of long double[] cards used to be
+/// height-measured at a WIDER nominal width than its real rendered
+/// columns — the group overflows into more columns than the one-pass
+/// guess assumes, heights came out too small, columns overfilled and the
+/// painter clipped the overflow cards. Packing now iterates to the real
+/// column width, so every rendered card fits its column.
+#[test]
+fn watchlist_folder_of_long_arrays_never_overflows_its_columns() {
+    let mut t = Tui::new(); // 120x36: 31 card rows under a group header
+    t.connect();
+    // 7 double[] elements render 69 chars: one line at full-pane width
+    // (69 <= 72), two lines at a half-pane column (69 > 33) — so the
+    // measured height differs between the wrong and the right width.
+    t.feed_owned(
+        (0..10)
+            .map(|i| {
+                (
+                    format!("Wrap/T{}", i),
+                    NtValue::DoubleArray(vec![1000.0; 7]),
+                )
+            })
+            .collect(),
+    );
+    t.app.watchlist = vec![MatrixSource::Glob("Wrap".into())];
+    t.app.focus = Focus::Watchlist;
+    t.app.toasts.clear();
+
+    let text = t.text();
+    for i in 0..10 {
+        assert!(
+            text.contains(&format!("┌ Wrap/T{}", i)),
+            "card {i} missing:\n{text}"
+        );
+    }
+    // Every visible card fully drawn: 10 card top-left borders plus the
+    // three pane blocks (tree, inspector, watchlist), and exactly as many
+    // bottom-right corners — a card clipped by an overfilled column
+    // renders ┌ without its ┘.
+    let tops = text.matches('┌').count();
+    let bottoms = text.matches('┘').count();
+    assert_eq!(
+        tops, bottoms,
+        "a card was clipped by an overfilled column:\n{text}"
+    );
+    assert!(
+        tops >= 13,
+        "expected 10 cards + 3 pane corners: {tops}\n{text}"
+    );
+}
