@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-10
+
 ### Added
 
 - **Swerve module vectors on the field card.** When the robot publishes
