@@ -54,6 +54,12 @@ EXE = os.path.join(ROOT, "target", "debug", "riont.exe" if IS_WIN else "riont")
 SERVER = os.path.join(ROOT, "test", "server.py")
 PY = sys.executable
 COLS, ROWS = 120, 36
+# ROADMAP 10: the suite used to test 120x36 only and a real rendering bug
+# escaped that way. Secondary viewports run as second instances (same
+# pattern as scenario_last_target_persist), asserting the same
+# cross-process contracts at a very wide and a very short size.
+WIDE_COLS, WIDE_ROWS = 200, 50
+SHORT_COLS, SHORT_ROWS = 90, 20
 TARGET = "127.0.0.1:5814"
 PORT = 5814
 
@@ -145,14 +151,14 @@ def wait_until(cond, timeout=6.0, desc="condition", poll=0.05):
 class Tui:
     """Headless TUI driver: stdin = key script, stdout = ANSI render."""
 
-    def __init__(self, target=TARGET):
+    def __init__(self, target=TARGET, cols=COLS, rows=ROWS):
         env = dict(
             os.environ,
             RIONT_HEADLESS="1",
-            RIONT_SIZE=f"{COLS}x{ROWS}",
+            RIONT_SIZE=f"{cols}x{rows}",
             RIONT_CONFIG=CFG_PATH,
         )
-        self.screen = pyte.Screen(COLS, ROWS)
+        self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.Stream()
         self.stream.attach(self.screen)
         self.decoder = codecs.getincrementaldecoder("utf-8")()
@@ -728,6 +734,105 @@ def scenario_field(tui):
     clear_watchlist(tui)
 
 
+def _seed_last_view(view):
+    """Seed the hermetic config's last_view so a booted Tui restores it.
+
+    Only safe while NO Tui is running (a live Tui re-persists config.json
+    and would race the seed — the viewport scenarios therefore run after
+    the main Tui has quit). Returns the previous file bytes (None if
+    absent) for _restore_last_view.
+    """
+    try:
+        with open(CFG_PATH, "rb") as fh:
+            prev = fh.read()
+    except OSError:
+        prev = None
+    with open(CFG_PATH, "w") as fh:
+        json.dump({"last_view": view}, fh)
+    return prev
+
+
+def _restore_last_view(prev):
+    if prev is None:
+        try:
+            os.remove(CFG_PATH)
+        except OSError:
+            pass
+    else:
+        with open(CFG_PATH, "wb") as fh:
+            fh.write(prev)
+
+
+def _velocity_card_shows_value(tui):
+    """True once a pinned Velocity card displays a streamed decimal value
+    beneath its title (the value contract, any geometry)."""
+    lines = tui.lines()
+    for i, ln in enumerate(lines):
+        if "FrontLeft/Velocity" in ln:
+            for j in range(i + 1, min(i + 5, len(lines))):
+                if re.search(r"\d+\.\d", lines[j]):
+                    return True
+    return False
+
+
+def _scenario_viewport(label, cols, rows):
+    """ROADMAP 10: cross-process contracts must hold at ANY viewport, not
+    just 120x36. Second-instance pattern (like scenario_last_target_persist):
+    spawn ANOTHER Tui at cols x rows against the SAME server and assert the
+    same contracts the main flow asserts — HUD reaches ONLINE, tree renders
+    topics, a seeded folder-glob watchlist renders its group column + cards,
+    values stream, process stays alive. Content assertions only: nothing
+    depends on pixel positions, so the SHORT layout stays honest.
+
+    Seeds the hermetic config's last_view with a folder glob (the same
+    side-effect contract the operator's config save produces); must run
+    while no other Tui is alive — steps order puts this after `quit`.
+    """
+    prev_cfg = _seed_last_view(["Swerve/FrontLeft/*"])
+    prev_screen = CURRENT["screen"]
+    tui = Tui(cols=cols, rows=rows)
+    CURRENT["screen"] = tui.text
+    try:
+        check(f"{label} {cols}x{rows}: TUI reaches COMM ONLINE",
+              wait_online(tui), tui.header())
+        check(f"{label} {cols}x{rows}: values stream (CODE RUNNING)",
+              wait_until(lambda: "CODE: RUNNING" in tui.header(), timeout=10),
+              tui.header())
+        check(f"{label} {cols}x{rows}: tree renders topics",
+              "[+] SmartDashboard" in tui.text(), tui.text())
+        check(f"{label} {cols}x{rows}: process stays alive", tui.alive,
+              f"alive={tui.alive}")
+        # Seeded folder-glob watchlist: the glob adopts exactly the three
+        # Swerve/FrontLeft members the fake robot publishes, grouped under
+        # its own column header (config last_view side effect, rendered).
+        check(f"{label} {cols}x{rows}: glob watchlist renders 3 cards",
+              wait_until(lambda: tui.watchlist_count() == 3, timeout=6),
+              tui.watchlist_count())
+        check(f"{label} {cols}x{rows}: group column header names the folder",
+              wait_until(lambda: re.search(r"Swerve/FrontLeft \(\d+\)",
+                                           tui.text()), timeout=6),
+              tui.text())
+        check(f"{label} {cols}x{rows}: group cards show member topics",
+              wait_until(lambda: all(n in tui.text() for n in (
+                  "FrontLeft/Velocity", "FrontLeft/Current",
+                  "FrontLeft/Module Angle")), timeout=6), tui.text())
+        check(f"{label} {cols}x{rows}: card values stream",
+              wait_until(lambda: _velocity_card_shows_value(tui), timeout=6),
+              tui.text())
+    finally:
+        tui.close()
+        CURRENT["screen"] = prev_screen
+        _restore_last_view(prev_cfg)
+
+
+def scenario_wide_viewport():
+    _scenario_viewport("wide", WIDE_COLS, WIDE_ROWS)
+
+
+def scenario_short_viewport():
+    _scenario_viewport("short", SHORT_COLS, SHORT_ROWS)
+
+
 def scenario_quit(tui, server):
     tui.send("q")
     check("quits on q", wait_until(lambda: not tui.alive, timeout=10),
@@ -779,6 +884,11 @@ def main():
         ("ssh-restart", lambda: scenario_ssh_restart(tui)),
         ("field", lambda: scenario_field(tui)),
         ("quit", lambda: scenario_quit(tui, server)),
+        # Roadmap 10: same contracts at other viewports, second instances
+        # against the same server. After `quit` — they seed the hermetic
+        # config's last_view, which a live Tui would re-persist over.
+        ("wide-viewport", lambda: scenario_wide_viewport()),
+        ("short-viewport", lambda: scenario_short_viewport()),
     ]
 
     status = 0
