@@ -607,6 +607,99 @@ fn edit_rejects_non_writable_topic_types() {
 }
 
 // ---------------------------------------------------------------------------
+// Inspector dock: undecoded struct topics (schema + hex view)
+// ---------------------------------------------------------------------------
+
+/// Simulate TopicMeta intake for an undecoded struct topic: the wire type
+/// is binary (`struct:*` type_str) with an advertised structSchema.
+fn feed_struct_topic(t: &mut Tui, name: &str, schema: Option<&str>, bytes: Vec<u8>) {
+    t.connect();
+    let topic = t.app.store.ensure(name);
+    topic.type_str = Some("struct:SwerveModuleState".into());
+    topic.struct_schema = schema.map(|s| s.to_string());
+    t.feed_owned(vec![(name.to_string(), NtValue::Raw(bytes))]);
+    t.jump("SwerveModuleState");
+}
+
+#[test]
+fn inspector_undecoded_struct_shows_schema_leaves_and_hex() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        Some(
+            "SwerveModuleState{angle:Rotation2d{radians:double}, \
+              speedMetersPerSecond:double}",
+        ),
+        vec![
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+        ],
+    );
+    let text = t.text();
+    // The dock must show parsed schema leaves (flattened, ordered) ...
+    assert!(text.contains("radians"), "{text}");
+    assert!(text.contains("speedMetersPerSecond"), "{text}");
+    // ... the <N bytes> value line ...
+    assert!(text.contains("<24 bytes>"), "{text}");
+    // ... and the hex view: offset column + the raw byte pairs.
+    assert!(text.contains("0000 11 22 33 44 55 66 77 88"), "{text}");
+    assert!(text.contains("0008 99 aa bb cc dd ee ff 01"), "{text}");
+}
+
+#[test]
+fn inspector_undecoded_struct_without_schema_still_shows_hex() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        None,
+        vec![0xde, 0xad, 0xbe, 0xef],
+    );
+    let text = t.text();
+    assert!(text.contains("0000 de ad be ef"), "{text}");
+    assert!(!text.contains("Schema:"), "{text}");
+}
+
+#[test]
+fn inspector_malformed_schema_degrades_to_raw_string() {
+    let mut t = Tui::new();
+    feed_struct_topic(
+        &mut t,
+        "Swerve/FrontLeft/SwerveModuleState",
+        Some("SwerveModuleState{angle:Rotation2d"),
+        vec![0x01],
+    );
+    let text = t.text();
+    // Raw schema string, no leaf lines, and the hex view still present.
+    // (The line is left-ellipsized to the dock width: assert on the tail.)
+    assert!(text.contains("angle:Rotation2d"), "{text}");
+    assert!(!text.contains("radians"), "{text}");
+    assert!(text.contains("0000 01"), "{text}");
+}
+
+#[test]
+fn inspector_decoded_struct_keeps_plain_value_no_hex() {
+    let mut t = Tui::new();
+    t.connect();
+    // struct:Pose2d decodes on intake (see pose::decode_pose2d) — the
+    // dock must keep the plain pose display, no schema/hex section.
+    let topic = t.app.store.ensure("odometry/pose");
+    topic.type_str = Some("struct:Pose2d".into());
+    topic.struct_schema =
+        Some("Pose2d{Translation2d{x:double, y:double}, Rotation2d{radians:double}}".into());
+    let mut b = Vec::new();
+    b.extend_from_slice(&1.5f64.to_le_bytes());
+    b.extend_from_slice(&(-2.5f64).to_le_bytes());
+    b.extend_from_slice(&0.0f64.to_le_bytes());
+    t.feed_owned(vec![("odometry/pose".to_string(), NtValue::Raw(b))]);
+    t.jump("odometry/pose");
+    let text = t.text();
+    assert!(text.contains("(1.50 m, -2.50 m"), "{text}");
+    assert!(!text.contains("0000 "), "{text}");
+}
+
+// ---------------------------------------------------------------------------
 // Command palette
 // ---------------------------------------------------------------------------
 
