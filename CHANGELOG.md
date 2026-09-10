@@ -33,6 +33,11 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Fixed
 
+- **Red-alliance field view mirrors the robot heading.** The mirrored
+  view flipped the robot's POSITION but not its heading, so red-view
+  operators saw the robot facing the wrong way. Red view at heading θ
+  now renders exactly like blue view at −θ.
+
 - **Crashes leave evidence behind instead of vanishing.** When RIONT
   panicked on a double-clicked Windows launch, the console closed with
   the panic message and the crash was undiagnosable. Panics are now

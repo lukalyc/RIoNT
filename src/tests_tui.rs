@@ -920,6 +920,15 @@ fn render_glyph(style: &str, dpm: f64) -> Vec<String> {
 /// Snapshot of the surviving glyphs at the sizes from the design review
 /// (heading 30°, 0.9 × 0.9 m robot). If one of these breaks, the glyph
 /// changed — re-review it visually before updating the strings.
+/// The field-card pane text (everything from the watchlist border right).
+fn pane(t: &mut Tui) -> String {
+    t.text()
+        .lines()
+        .map(|l| l.chars().skip(43).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn robot_glyph_snapshots() {
     // Print the actual glyphs once if the snapshot drifts:
@@ -968,21 +977,6 @@ fn braille_screen(t: &mut Tui) -> Vec<String> {
         .collect()
 }
 
-/// Raw render rows cropped to the robot glyph region (cols 53..85, rows
-/// 14..25 at the 120x36 lone-field-card size — the glyph occupies roughly
-/// cols 58..75, rows 15..23; walls/marks sit outside). Needed because the
-/// mirrored WALL scene rasterizes with ±1-braille-dot asymmetry (Canvas
-/// floor-quantization is not mirror-symmetric), while the robot GLYPH is
-/// drawn from identical inputs in both views and must be dot-identical.
-fn robot_glyph_region(t: &mut Tui) -> Vec<String> {
-    t.render()
-        .iter()
-        .enumerate()
-        .filter(|(y, _)| (14..25).contains(y))
-        .map(|(_, l)| l.chars().skip(53).take(32).collect::<String>())
-        .collect()
-}
-
 /// Feed a Limelight-style botpose (x, y, yaw_deg) at the given topic.
 fn feed_botpose(t: &mut Tui, name: &str, x: f64, y: f64, yaw_deg: f64) {
     t.feed(vec![(
@@ -1014,53 +1008,114 @@ fn swerve_payload(states: &[(f64, f64)]) -> Vec<u8> {
 /// negates; a (cos θ, sin θ) convention would give π − θ). The robot
 /// POSITION was always mirrored via fx(); the heading was not, so
 /// red-view robots faced the wrong way.
+/// Regression: red view at stored heading θ must render the robot glyph
+/// EXACTLY like blue view at −θ (the glyph's heading unit vector is
+/// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
+/// negates; a (cos θ, sin θ) convention would give π − θ). The robot
+/// POSITION was always mirrored via fx(); the heading was not, so
+/// red-view robots faced the wrong way.
+///
+/// Method: the whole FIELD mirrors in red view (walls included), so the
+/// two scenes can never be text-equal. Instead each scene is diffed
+/// against ITSELF with the pose estimate emptied (the sticky field card
+/// keeps rendering; only the glyph disappears), isolating the robot's
+/// dot positions — those must match across the mirror identity. The test
+/// also asserts the mirror does SOMETHING (red dots ≠ blue-at-θ dots):
+/// with a 0.9 m footprint θ and −θ quantize to identical dots, so the
+/// scene uses a 4 m footprint.
 #[test]
 fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
     use std::f64::consts::PI;
     let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
+    let (robot_len, robot_wid) = (4.0f64, 4.0f64);
 
-    let mut blue = Tui::new();
-    blue.connect();
-    // The mirrored-scene blue equivalent: position mirrored, heading −θ.
-    let field_len = blue.app.field_map.length_m;
-    feed_botpose(
-        &mut blue,
-        "SmartDashboard/botpose_wpiblue",
-        field_len - x,
-        y,
-        (-theta).to_degrees(),
-    );
-    blue.pin_via_search("botpose");
+    // Robot-only dot set: pane chars that differ once the pose estimate is
+    // emptied (sticky card keeps rendering; only the glyph vanishes; the
+    // trail dot is mirrored identically in both scenes).
+    let robot_dots = |t: &mut Tui| {
+        let with = pane(t);
+        t.feed(vec![(
+            "SmartDashboard/botpose_wpiblue",
+            NtValue::DoubleArray(vec![]),
+        )]);
+        let without = pane(t);
+        let mut dots: Vec<(usize, usize)> = Vec::new();
+        let is_braille = |l: &str| l.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c));
+        for (ri, (wr, br)) in with.lines().zip(without.lines()).enumerate() {
+            // Canvas rows only: the card's meta row (rate/Δ) is
+            // wall-clock dependent and carries no glyph information.
+            if !is_braille(wr) {
+                continue;
+            }
+            for (ci, (wc, bc)) in wr.chars().zip(br.chars()).enumerate() {
+                if wc != bc {
+                    dots.push((ri, ci));
+                }
+            }
+        }
+        dots.sort();
+        dots
+    };
+
+    let scene = |t: &mut Tui, px: f64, heading: f64| {
+        t.connect();
+        t.app.config.field.robot_length_m = robot_len;
+        t.app.config.field.robot_width_m = robot_wid;
+        feed_botpose(
+            t,
+            "SmartDashboard/botpose_wpiblue",
+            px,
+            y,
+            heading.to_degrees(),
+        );
+        t.pin_via_search("botpose");
+    };
 
     let mut red = Tui::new();
-    red.connect();
     red.app.config.field.alliance = "red".into();
-    feed_botpose(
-        &mut red,
-        "SmartDashboard/botpose_wpiblue",
-        x,
-        y,
-        theta.to_degrees(),
-    );
-    red.pin_via_search("botpose");
-    // Crop to the glyph: see `robot_glyph_region` (the wall scene's ±1-dot
-    // rasterization asymmetry under mirroring is not part of the contract).
-    let red_screen = robot_glyph_region(&mut red);
-    let blue_screen = robot_glyph_region(&mut blue);
+    scene(&mut red, x, theta);
 
-    assert_eq!(red_screen, blue_screen, "red @ θ must equal blue @ −θ");
-    // Sanity: the glyph must actually be IN the crop (guard against the
-    // window drifting away from the robot and passing vacuously).
-    assert!(
-        blue_screen
-            .iter()
-            .any(|l| l.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))),
-        "robot glyph must appear in the crop"
+    let mut blue_m = Tui::new();
+    scene(&mut blue_m, -theta, -theta); // position mirrored: len − x
+                                        // (feed with the mirrored x explicitly)
+    blue_m.app.store.apply_value(
+        "SmartDashboard/botpose_wpiblue",
+        NtValue::DoubleArray(vec![
+            field_len(&blue_m) - x,
+            y,
+            0.0,
+            0.0,
+            0.0,
+            (-theta).to_degrees(),
+        ]),
+        1_000,
+        std::time::Instant::now(),
+    );
+
+    let mut blue_ref = Tui::new();
+    scene(&mut blue_ref, x, theta);
+
+    let red_dots = robot_dots(&mut red);
+    let blue_mirrored_dots = robot_dots(&mut blue_m);
+    let blue_plain_dots = robot_dots(&mut blue_ref);
+
+    assert!(!blue_mirrored_dots.is_empty(), "robot glyph must render");
+    // The mirror identity.
+    assert_eq!(
+        red_dots, blue_mirrored_dots,
+        "red @ θ must equal blue @ −θ (position mirrored)"
+    );
+    // And it must be discriminative: the un-mirrored blue scene differs.
+    assert_ne!(
+        red_dots, blue_plain_dots,
+        "red @ θ must differ from blue @ θ, or the test is vacuous"
     );
 }
 
-/// Struct decoding expansion (ROADMAP 6): a `struct:ChassisSpeeds`
-/// topic's binary payload renders its NAMED fields, not `<24 bytes>`.
+fn field_len(t: &Tui) -> f64 {
+    t.app.field_map.length_m
+}
+
 #[test]
 fn struct_chassis_speeds_renders_named_fields() {
     let mut t = Tui::new();

@@ -546,12 +546,21 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
                             dim(ellipsize_left(schema, w.saturating_sub(8))),
                         ]));
                     } else {
-                        for leaf in &leaves {
+                        // Cap the leaf list so a wide schema can't push the
+                        // hex view below the dock's fixed pane.
+                        const MAX_SCHEMA_LEAVES: usize = 8;
+                        for leaf in leaves.iter().take(MAX_SCHEMA_LEAVES) {
                             lines.push(Line::from(vec![
                                 plain("  "),
                                 plain(&leaf.name),
                                 dim(format!(" {}", leaf.ty)),
                             ]));
+                        }
+                        if leaves.len() > MAX_SCHEMA_LEAVES {
+                            lines.push(Line::from(dim(format!(
+                                "  … {} more fields",
+                                leaves.len() - MAX_SCHEMA_LEAVES
+                            ))));
                         }
                     }
                 }
@@ -1409,10 +1418,12 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
                             rad,
                             states,
                             m.color,
-                            app.config.field.robot_length_m,
-                            app.config.field.robot_width_m,
-                            dpm,
-                            red,
+                            &GlyphFrame {
+                                len: app.config.field.robot_length_m,
+                                wid: app.config.field.robot_width_m,
+                                dpm,
+                                mirror: red,
+                            },
                         );
                     }
                 }
@@ -1560,6 +1571,16 @@ const SWERVE_VEC_SCALE: f64 = 0.15;
 const SWERVE_VEC_MAX: f64 = 0.5;
 const SWERVE_VEC_FLOOR_MPS: f64 = 0.02;
 
+/// Footprint + canvas context for one field-card robot render, shared by
+/// the glyph and its module vectors (everything is drawn in the same
+/// mirrored frame).
+struct GlyphFrame {
+    len: f64,
+    wid: f64,
+    dpm: f64,
+    mirror: bool,
+}
+
 /// Draw one robot's swerve module vectors: a line from each footprint
 /// corner along the module's steer direction, length proportional to
 /// speed (see the SWERVE_VEC_* tuning consts). Everything is drawn in
@@ -1573,15 +1594,12 @@ fn draw_swerve_vectors(
     rad: f64,
     states: &[(f64, f64)],
     color: Color,
-    len: f64,
-    wid: f64,
-    dpm: f64,
-    mirror: bool,
+    frame: &GlyphFrame,
 ) {
-    if robot_style_for(len * dpm) == "E" {
+    if robot_style_for(frame.len * frame.dpm) == "E" {
         return;
     }
-    for (a, b) in swerve_vector_segments(c, rad, states, len, wid, mirror) {
+    for (a, b) in swerve_vector_segments(c, rad, states, frame.len, frame.wid, frame.mirror) {
         ctx.draw(&CanvasLine {
             x1: a.0,
             y1: a.1,

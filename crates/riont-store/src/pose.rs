@@ -170,11 +170,12 @@ fn decode_3_f64(bytes: &[u8]) -> Option<(f64, f64, f64)> {
 /// fully determines N, and WPILib's per-module schema varies by season.
 /// NaN payloads are rejected as corrupt.
 pub fn decode_swerve_module_states(bytes: &[u8]) -> Option<NtValue> {
-    if bytes.is_empty() || bytes.len() % 16 != 0 || bytes.len() / 16 > MAX_SWERVE_MODULES {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(16) || bytes.len() / 16 > MAX_SWERVE_MODULES
+    {
         return None;
     }
     let mut states = Vec::with_capacity(bytes.len() / 16);
-    for pair in bytes.chunks_exact(16) {
+    for pair in bytes.as_chunks::<16>().0 {
         let angle = f64::from_le_bytes(pair[0..8].try_into().ok()?);
         let speed = f64::from_le_bytes(pair[8..16].try_into().ok()?);
         if angle.is_nan() || speed.is_nan() {

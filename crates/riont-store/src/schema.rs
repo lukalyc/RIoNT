@@ -44,7 +44,7 @@ pub fn parse_struct_schema(schema: &str) -> Vec<SchemaLeaf> {
     }
     p.i += 1;
     let mut out = Vec::new();
-    if !p.fields(&mut out, 1) {
+    if !p.fields("", &mut out, 1) {
         return Vec::new();
     }
     p.skip_ws();
@@ -86,8 +86,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse fields until the matching `}` (consumed). `depth` bounds
-    /// recursion; a false return means malformed.
-    fn fields(&mut self, out: &mut Vec<SchemaLeaf>, depth: usize) -> bool {
+    /// recursion; a false return means malformed. `prefix` (empty at the
+    /// top level) is the dotted path of the enclosing nested structs, so
+    /// leaves read `angle.radians` instead of a bare `radians` — nested
+    /// struct field names are context, not throwaway wrappers.
+    fn fields(&mut self, prefix: &str, out: &mut Vec<SchemaLeaf>, depth: usize) -> bool {
         if depth > MAX_DEPTH {
             return false;
         }
@@ -99,10 +102,16 @@ impl<'a> Parser<'a> {
             }
             self.skip_ws();
             match self.peek() {
-                // Nested struct field: recurse into its fields.
+                // Nested struct field: recurse into its fields, with the
+                // field name prefixed onto the children.
                 Some(b'{') => {
                     self.i += 1;
-                    if !self.fields(out, depth + 1) {
+                    let nested = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}.{name}")
+                    };
+                    if !self.fields(&nested, out, depth + 1) {
                         return false;
                     }
                 }
@@ -120,10 +129,20 @@ impl<'a> Parser<'a> {
                     self.skip_ws();
                     if self.peek() == Some(b'{') {
                         self.i += 1;
-                        if !self.fields(out, depth + 1) {
+                        let nested = if prefix.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{prefix}.{name}")
+                        };
+                        if !self.fields(&nested, out, depth + 1) {
                             return false;
                         }
                     } else {
+                        let name = if prefix.is_empty() {
+                            name
+                        } else {
+                            format!("{prefix}.{name}")
+                        };
                         out.push(SchemaLeaf { name, ty });
                     }
                 }
@@ -168,7 +187,11 @@ mod tests {
         );
         assert_eq!(
             out,
-            leaves(&[("x", "double"), ("y", "double"), ("radians", "double")])
+            leaves(&[
+                ("Translation2d.x", "double"),
+                ("Translation2d.y", "double"),
+                ("Rotation2d.radians", "double"),
+            ])
         );
     }
 
@@ -181,7 +204,10 @@ mod tests {
         );
         assert_eq!(
             out,
-            leaves(&[("radians", "double"), ("speedMetersPerSecond", "double")])
+            leaves(&[
+                ("angle.radians", "double"),
+                ("speedMetersPerSecond", "double")
+            ])
         );
     }
 
@@ -193,7 +219,11 @@ mod tests {
         );
         assert_eq!(
             out,
-            leaves(&[("x", "double"), ("y", "double"), ("radians", "double")])
+            leaves(&[
+                ("Translation2d.x", "double"),
+                ("Translation2d.y", "double"),
+                ("Rotation2d.radians", "double"),
+            ])
         );
     }
 
