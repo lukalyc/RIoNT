@@ -8,6 +8,13 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Changed
+
+- **Release asset names drop the rustc `unknown` vendor field:**
+  `riont-0.8.1-x86_64-linux-gnu.tar.gz` instead of
+  `x86_64-unknown-linux-gnu`. Windows (`pc-windows-msvc`) and macOS
+  (`apple-darwin`) names are unchanged.
+
 ## [0.8.0] - 2026-09-10
 
 ### Added

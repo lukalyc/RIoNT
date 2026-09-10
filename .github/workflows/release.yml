@@ -45,15 +45,19 @@ jobs:
           EXT: ${{ matrix.ext }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Asset names drop the rustc "unknown" vendor field:
+          # x86_64-unknown-linux-gnu -> x86_64-linux-gnu (the other
+          # triples carry no vendor segment and are unchanged).
+          NAME_TRIPLE="${TARGET/-unknown-/-}"
           STAGE="stage/riont-$VERSION"
           mkdir -p "$STAGE" dist
           cp "target/$TARGET/release/riont$EXT" "$STAGE/"
           cp README.md CHANGELOG.md LICENSE "$STAGE/"
           if [[ "$TARGET" == *windows* ]]; then
             # bsdtar on the Windows runner: -a infers zip from the name.
-            tar -a -c -f "dist/riont-$VERSION-$TARGET.zip" -C stage "riont-$VERSION"
+            tar -a -c -f "dist/riont-$VERSION-$NAME_TRIPLE.zip" -C stage "riont-$VERSION"
           else
-            tar -czf "dist/riont-$VERSION-$TARGET.tar.gz" -C stage "riont-$VERSION"
+            tar -czf "dist/riont-$VERSION-$NAME_TRIPLE.tar.gz" -C stage "riont-$VERSION"
           fi
 
       - uses: actions/upload-artifact@v4

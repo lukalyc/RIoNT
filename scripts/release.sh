@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # RIONT release script — cut a versioned release from [Unreleased].
 #
-# Usage: scripts/release.sh <patch|minor|major|x.y.z> "one-line summary"
+# Usage:
+#   scripts/release.sh <patch|minor|major|x.y.z> "one-line summary" [flags]
+#
+# Flags:
+#   -y, --yes      cut the release WITHOUT the confirmation prompt
+#                  (non-interactive — for scripts and coding agents)
+#   --dry-run      verify preconditions and preview the release notes,
+#                  then exit without changing anything
 #
 # What it does:
 #   1. Verifies preconditions: clean tree, on master, up to date, and a
@@ -15,16 +22,38 @@
 #
 # Nothing is pushed. Finish with: git push --follow-tags
 # (release.yml then builds and attaches the release binaries).
+#
+# AGENT INVOCATION (non-interactive shells get EOF at the confirm prompt
+# and abort silently):
+#   scripts/release.sh minor "summary" --yes          # cut
+#   scripts/release.sh 0.9.0 "summary" --dry-run      # verify only
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BUMP="${1:-}"
-SUMMARY="${2:-}"
+BUMP=""
+SUMMARY=""
+ASSUME_YES=no
+DRY_RUN=no
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -y|--yes) ASSUME_YES=yes ;;
+    --dry-run) DRY_RUN=yes ;;
+    -*) echo "ERROR: unknown flag '$1' (supported: -y/--yes, --dry-run)" >&2; exit 2 ;;
+    *)
+      if [[ -z "$BUMP" ]]; then BUMP="$1"
+      elif [[ -z "$SUMMARY" ]]; then SUMMARY="$1"
+      else echo "ERROR: unexpected argument '$1'" >&2; exit 2
+      fi
+      ;;
+  esac
+  shift
+done
 
 if [[ -z "$BUMP" || -z "$SUMMARY" ]]; then
-  echo "usage: scripts/release.sh <patch|minor|major|x.y.z> \"one-line summary\"" >&2
+  echo "usage: scripts/release.sh <patch|minor|major|x.y.z> \"one-line summary\" [-y|--yes] [--dry-run]" >&2
   exit 2
 fi
 
@@ -71,8 +100,15 @@ echo "release: $OLD -> $NEW  ($SUMMARY)"
 awk '/^## \[Unreleased\]/{f=1} /^## / && !f{exit} f' CHANGELOG.md | grep -Ev '^\s*$' \
   | sed 's/^/    | /'
 
-read -r -p "Cut release v$NEW? [y/N] " CONFIRM
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "aborted."; exit 1; }
+if [[ "$DRY_RUN" == yes ]]; then
+  echo "dry run: preconditions pass, would cut v$NEW. Nothing was changed."
+  exit 0
+fi
+
+if [[ "$ASSUME_YES" != yes ]]; then
+  read -r -p "Cut release v$NEW? [y/N] " CONFIRM
+  [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "aborted."; exit 1; }
+fi
 
 # --- rotate the changelog --------------------------------------------------
 

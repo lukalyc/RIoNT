@@ -55,6 +55,20 @@ macOS release binaries to the GitHub release (`.github/workflows/
 release.yml`). The tagged commit is the binary people run; the HUD
 version on any screenshot therefore identifies its exact release.
 
+### Agent invocation (non-interactive)
+
+Coding agents must pass `--yes` — non-interactive shells get EOF at the
+confirmation prompt and the script aborts silently:
+
+```
+scripts/release.sh <patch|minor|major|x.y.z> "summary" --yes
+```
+
+`--dry-run` verifies preconditions (clean tree, on master, up to date,
+non-empty `[Unreleased]`, tag not taken) and previews the release notes
+without changing anything — run it first when unsure why a release is
+refused.
+
 ### 3. Verify (every commit, release, and CI run)
 
 Run BOTH test tiers (see "Testing workflow" below):
