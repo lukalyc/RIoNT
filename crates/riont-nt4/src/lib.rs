@@ -1049,6 +1049,32 @@ fn to_msgpack(v: &NtValue) -> (&'static str, u64, Mv) {
             b.extend_from_slice(&radians.to_le_bytes());
             ("struct:Pose2d", DT_BINARY, Mv::Binary(b))
         }
+        // ChassisSpeeds / Twist2d / SwerveModuleStates are likewise never
+        // user-published (not writable); a programmatic round-trip encodes
+        // the canonical WPILib struct payload so the wire format stays
+        // valid (see riont-store::pose decoders for the layout).
+        NtValue::ChassisSpeeds { vx, vy, omega } => {
+            let mut b = Vec::with_capacity(24);
+            b.extend_from_slice(&vx.to_le_bytes());
+            b.extend_from_slice(&vy.to_le_bytes());
+            b.extend_from_slice(&omega.to_le_bytes());
+            ("struct:ChassisSpeeds", DT_BINARY, Mv::Binary(b))
+        }
+        NtValue::Twist2d { dx, dy, dtheta } => {
+            let mut b = Vec::with_capacity(24);
+            b.extend_from_slice(&dx.to_le_bytes());
+            b.extend_from_slice(&dy.to_le_bytes());
+            b.extend_from_slice(&dtheta.to_le_bytes());
+            ("struct:Twist2d", DT_BINARY, Mv::Binary(b))
+        }
+        NtValue::SwerveModuleStates(states) => {
+            let mut b = Vec::with_capacity(states.len() * 16);
+            for (angle, speed) in states {
+                b.extend_from_slice(&angle.to_le_bytes());
+                b.extend_from_slice(&speed.to_le_bytes());
+            }
+            ("struct:SwerveModuleStates", DT_BINARY, Mv::Binary(b))
+        }
     }
 }
 

@@ -1,10 +1,16 @@
-//! Conservative pose-topic classification + WPILib `struct:Pose2d` decoding.
+//! Conservative pose-topic classification + WPILib struct decoding.
 //!
 //! Deliberately paranoid: only exact Limelight pose leaf names and the
 //! exact `struct:Pose2d` type string classify as a robot pose. Lookalikes
 //! (`targetpose`, odometry scalars, Field2d object lists, other double[6]
 //! arrays) stay ordinary topics — a false positive would draw a phantom
 //! robot on the field, so there is no fuzzy matching, ever.
+//!
+//! Struct decoding (`decode_*`): WPILib packs known struct types as
+//! little-endian binary payloads on wire type DT_BINARY with a
+//! `struct:<Name>` type string. Only the exact, well-known layouts below
+//! are decoded — malformed or unknown payloads stay raw bytes and render
+//! as `<N bytes>` rather than being guessed at.
 
 use crate::store::NtValue;
 
@@ -95,17 +101,93 @@ pub fn decode_pose2d(bytes: &[u8], struct_schema: Option<&str>) -> Option<NtValu
 /// `Pose2d{Translation2d{x:double, y:double}, Rotation2d{radians:double}}`.
 /// Accept only schemas declaring exactly those fields in that order.
 fn schema_matches_canonical(schema: &str) -> bool {
-    let Some(x) = schema.find("x:double") else {
-        return false;
-    };
-    let Some(y) = schema.find("y:double") else {
-        return false;
-    };
-    let Some(r) = schema.find("radians:double") else {
-        return false;
-    };
-    x < y && y < r
+    schema_declares_in_order(schema, &["x:double", "y:double", "radians:double"])
 }
+
+/// True when every named field appears in `schema` in the given order
+/// (each field's first occurrence). A missing field fails; extra or
+/// nested content around them is tolerated — we only need the reading
+/// ORDER of the fields we decode.
+fn schema_declares_in_order(schema: &str, fields: &[&str]) -> bool {
+    let mut pos = 0;
+    for f in fields {
+        match schema[pos..].find(f) {
+            Some(i) => pos += i + f.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Decode a WPILib `struct:ChassisSpeeds` binary payload (24-byte
+/// little-endian vx, vy, omega — m/s body-frame + rad/s) into an
+/// `NtValue::ChassisSpeeds`. Same paranoia as [`decode_pose2d`]: an
+/// advertised schema must declare the three fields in canonical order,
+/// and NaN payloads are rejected as corrupt.
+pub fn decode_chassis_speeds(bytes: &[u8], struct_schema: Option<&str>) -> Option<NtValue> {
+    if let Some(schema) = struct_schema {
+        if !schema_declares_in_order(schema, &["vx:double", "vy:double", "omega:double"]) {
+            return None;
+        }
+    }
+    let (vx, vy, omega) = decode_3_f64(bytes)?;
+    Some(NtValue::ChassisSpeeds { vx, vy, omega })
+}
+
+/// Decode a WPILib `struct:Twist2d` binary payload (24-byte little-endian
+/// dx, dy, dtheta — meters + radians) into an `NtValue::Twist2d`. Same
+/// paranoia as [`decode_pose2d`].
+pub fn decode_twist2d(bytes: &[u8], struct_schema: Option<&str>) -> Option<NtValue> {
+    if let Some(schema) = struct_schema {
+        if !schema_declares_in_order(schema, &["dx:double", "dy:double", "dtheta:double"]) {
+            return None;
+        }
+    }
+    let (dx, dy, dtheta) = decode_3_f64(bytes)?;
+    Some(NtValue::Twist2d { dx, dy, dtheta })
+}
+
+/// Shared body of the 24-byte three-f64 struct decoders: exact length,
+/// little-endian fields, NaN rejected as corrupt.
+fn decode_3_f64(bytes: &[u8]) -> Option<(f64, f64, f64)> {
+    if bytes.len() < 24 {
+        return None;
+    }
+    let a = f64::from_le_bytes(bytes[0..8].try_into().ok()?);
+    let b = f64::from_le_bytes(bytes[8..16].try_into().ok()?);
+    let c = f64::from_le_bytes(bytes[16..24].try_into().ok()?);
+    if a.is_nan() || b.is_nan() || c.is_nan() {
+        return None;
+    }
+    Some((a, b, c))
+}
+
+/// Decode a WPILib `struct:SwerveModuleStates` binary payload: N modules
+/// of 16 bytes each, little-endian `(angle: f64 radians, speed: f64 m/s)`.
+/// N is the payload length / 16 — non-zero, a multiple of 16 and capped
+/// at 8 (a real swerve drive has 4; anything else is corrupt, refused
+/// rather than guessed at). No schema gate: the payload length alone
+/// fully determines N, and WPILib's per-module schema varies by season.
+/// NaN payloads are rejected as corrupt.
+pub fn decode_swerve_module_states(bytes: &[u8]) -> Option<NtValue> {
+    if bytes.is_empty() || bytes.len() % 16 != 0 || bytes.len() / 16 > MAX_SWERVE_MODULES {
+        return None;
+    }
+    let mut states = Vec::with_capacity(bytes.len() / 16);
+    for pair in bytes.chunks_exact(16) {
+        let angle = f64::from_le_bytes(pair[0..8].try_into().ok()?);
+        let speed = f64::from_le_bytes(pair[8..16].try_into().ok()?);
+        if angle.is_nan() || speed.is_nan() {
+            return None;
+        }
+        states.push((angle, speed));
+    }
+    Some(NtValue::SwerveModuleStates(states))
+}
+
+/// Upper bound on decoded swerve modules (see
+/// [`decode_swerve_module_states`]).
+const MAX_SWERVE_MODULES: usize = 8;
 
 #[cfg(test)]
 mod tests {
@@ -213,5 +295,102 @@ mod tests {
         b.extend_from_slice(&0.0f64.to_le_bytes());
         b.extend_from_slice(&0.0f64.to_le_bytes());
         assert!(decode_pose2d(&b, None).is_none());
+    }
+
+    // ---- struct decoding expansion (ROADMAP 6) -----------------------
+
+    fn pack3(a: f64, b: f64, c: f64) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&a.to_le_bytes());
+        v.extend_from_slice(&b.to_le_bytes());
+        v.extend_from_slice(&c.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn chassis_speeds_decodes() {
+        let b = pack3(1.5, -0.5, 0.25);
+        let v = decode_chassis_speeds(&b, None).unwrap();
+        assert_eq!(
+            v,
+            NtValue::ChassisSpeeds {
+                vx: 1.5,
+                vy: -0.5,
+                omega: 0.25
+            }
+        );
+    }
+
+    #[test]
+    fn chassis_speeds_accepts_canonical_schema_and_refuses_unknown() {
+        let b = pack3(0.0, 0.0, 0.0);
+        assert!(decode_chassis_speeds(
+            &b,
+            Some("ChassisSpeeds{vx:double, vy:double, omega:double}")
+        )
+        .is_some());
+        assert!(
+            decode_chassis_speeds(&b, Some("Pose2d{Translation2d{x:double, y:double}}")).is_none()
+        );
+    }
+
+    #[test]
+    fn chassis_speeds_refuses_short_and_nan() {
+        assert!(decode_chassis_speeds(&[0u8; 23], None).is_none());
+        let b = pack3(f64::NAN, 0.0, 0.0);
+        assert!(decode_chassis_speeds(&b, None).is_none());
+    }
+
+    #[test]
+    fn twist2d_decodes() {
+        let b = pack3(0.4, -1.25, 3.5);
+        let v = decode_twist2d(&b, None).unwrap();
+        assert_eq!(
+            v,
+            NtValue::Twist2d {
+                dx: 0.4,
+                dy: -1.25,
+                dtheta: 3.5
+            }
+        );
+        // Short payload / NaN / wrong schema degrade to raw bytes.
+        assert!(decode_twist2d(&[0u8; 16], None).is_none());
+        assert!(decode_twist2d(&pack3(0.0, f64::NAN, 0.0), None).is_none());
+        assert!(decode_twist2d(
+            &pack3(0.0, 0.0, 0.0),
+            Some("Twist2d{dx:double, other:double}")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn swerve_module_states_decode() {
+        // Two modules: (angle, speed) pairs.
+        let mut b = Vec::new();
+        for (a, s) in [(0.25f64, 2.5f64), (-1.0, 4.0)] {
+            b.extend_from_slice(&a.to_le_bytes());
+            b.extend_from_slice(&s.to_le_bytes());
+        }
+        let v = decode_swerve_module_states(&b).unwrap();
+        assert_eq!(
+            v,
+            NtValue::SwerveModuleStates(vec![(0.25, 2.5), (-1.0, 4.0)])
+        );
+    }
+
+    #[test]
+    fn swerve_module_states_refuse_malformed_payloads() {
+        // Not a multiple of 16.
+        assert!(decode_swerve_module_states(&[0u8; 24]).is_none());
+        // Zero modules (empty).
+        assert!(decode_swerve_module_states(&[]).is_none());
+        // Over the 8-module cap: a real swerve drive has 4.
+        assert!(decode_swerve_module_states(&[0u8; 9 * 16]).is_none());
+        // NaN anywhere in the payload refuses the WHOLE value.
+        let mut b = vec![0u8; 4 * 16];
+        b[40..48].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(decode_swerve_module_states(&b).is_none());
+        // Exactly 8 modules (128 bytes) is the accepted maximum.
+        assert!(decode_swerve_module_states(&[0u8; 8 * 16]).is_some());
     }
 }

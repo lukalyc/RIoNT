@@ -18,6 +18,13 @@ pub enum NtType {
     Raw,
     /// Decoded WPILib `struct:Pose2d` (see pose::decode_pose2d).
     Pose2d,
+    /// Decoded WPILib `struct:ChassisSpeeds` (see pose::decode_chassis_speeds).
+    ChassisSpeeds,
+    /// Decoded WPILib `struct:Twist2d` (see pose::decode_twist2d).
+    Twist2d,
+    /// Decoded WPILib `struct:SwerveModuleStates`
+    /// (see pose::decode_swerve_module_states).
+    SwerveModuleStates,
     Unknown,
 }
 
@@ -35,6 +42,9 @@ impl NtType {
             "json" => NtType::Json,
             "raw" | "msgpack" => NtType::Raw,
             "struct:Pose2d" | "pose2d" => NtType::Pose2d,
+            "struct:ChassisSpeeds" | "chassis_speeds" => NtType::ChassisSpeeds,
+            "struct:Twist2d" | "twist2d" => NtType::Twist2d,
+            "struct:SwerveModuleStates" | "swerve_modules" => NtType::SwerveModuleStates,
             _ => NtType::Unknown,
         }
     }
@@ -52,6 +62,9 @@ impl NtType {
             NtType::Json => "json",
             NtType::Raw => "raw",
             NtType::Pose2d => "pose2d",
+            NtType::ChassisSpeeds => "chassis_speeds",
+            NtType::Twist2d => "twist2d",
+            NtType::SwerveModuleStates => "swerve_modules",
             NtType::Unknown => "?",
         }
     }
@@ -84,6 +97,21 @@ pub enum NtValue {
         y: f64,
         radians: f64,
     },
+    /// Decoded WPILib ChassisSpeeds: m/s body-frame velocities + rad/s.
+    ChassisSpeeds {
+        vx: f64,
+        vy: f64,
+        omega: f64,
+    },
+    /// Decoded WPILib Twist2d: m + m + radians.
+    Twist2d {
+        dx: f64,
+        dy: f64,
+        dtheta: f64,
+    },
+    /// Decoded WPILib SwerveModuleStates: (angle_radians, speed_mps) per
+    /// module, in WPILib module order (FL, FR, RL, RR), capped at 8.
+    SwerveModuleStates(Vec<(f64, f64)>),
 }
 
 impl NtValue {
@@ -100,6 +128,9 @@ impl NtValue {
             NtValue::Json(_) => "json",
             NtValue::Raw(_) => "raw",
             NtValue::Pose2d { .. } => "pose2d",
+            NtValue::ChassisSpeeds { .. } => "chassis_speeds",
+            NtValue::Twist2d { .. } => "twist2d",
+            NtValue::SwerveModuleStates(_) => "swerve_modules",
         }
     }
 
@@ -169,6 +200,22 @@ impl NtValue {
                 y,
                 radians.to_degrees()
             ),
+            NtValue::ChassisSpeeds { vx, vy, omega } => format!(
+                "vx {:.2} m/s  vy {:.2} m/s  \u{03c9} {:.2} rad/s",
+                vx, vy, omega
+            ),
+            NtValue::Twist2d { dx, dy, dtheta } => format!(
+                "dx {:.2} m  dy {:.2} m  d\u{03b8} {:.2} rad",
+                dx, dy, dtheta
+            ),
+            NtValue::SwerveModuleStates(states) => format!(
+                "[{}]",
+                states
+                    .iter()
+                    .map(|(a, s)| format!("{:.2}rad {:.2}m/s", a, s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -227,12 +274,21 @@ impl TopicData {
     }
 
     fn apply(&mut self, v: NtValue, server_ts: u64, now: Instant) {
-        // Struct-aware decode: a `struct:Pose2d` topic's binary payload
-        // becomes a real pose value; unknown struct types stay raw — never
-        // guess a schema we were not told about.
-        let decoded = match &v {
-            NtValue::Raw(bytes) if self.type_str.as_deref() == Some("struct:Pose2d") => {
+        // Struct-aware decode: known WPILib struct topics' binary
+        // payloads become real typed values; unknown struct types stay
+        // raw — never guess a schema we were not told about.
+        let decoded = match (&v, self.type_str.as_deref()) {
+            (NtValue::Raw(bytes), Some("struct:Pose2d")) => {
                 crate::pose::decode_pose2d(bytes, self.struct_schema.as_deref())
+            }
+            (NtValue::Raw(bytes), Some("struct:ChassisSpeeds")) => {
+                crate::pose::decode_chassis_speeds(bytes, self.struct_schema.as_deref())
+            }
+            (NtValue::Raw(bytes), Some("struct:Twist2d")) => {
+                crate::pose::decode_twist2d(bytes, self.struct_schema.as_deref())
+            }
+            (NtValue::Raw(bytes), Some("struct:SwerveModuleStates")) => {
+                crate::pose::decode_swerve_module_states(bytes)
             }
             _ => None,
         };
@@ -361,5 +417,63 @@ mod tests {
             now,
         );
         assert!(!lookalike.is_pose_source());
+    }
+
+    #[test]
+    fn struct_decoding_expansion_dispatches_on_type_str() {
+        let now = std::time::Instant::now();
+
+        // ChassisSpeeds: raw payload decodes into the named-field value.
+        let mut td = TopicData::new("Odometry/ChassisSpeeds".into());
+        td.type_str = Some("struct:ChassisSpeeds".into());
+        let mut b = Vec::new();
+        b.extend_from_slice(&1.25f64.to_le_bytes());
+        b.extend_from_slice(&0.0f64.to_le_bytes());
+        b.extend_from_slice(&0.5f64.to_le_bytes());
+        td.apply(NtValue::Raw(b), 1_000, now);
+        assert_eq!(
+            td.current,
+            Some(NtValue::ChassisSpeeds {
+                vx: 1.25,
+                vy: 0.0,
+                omega: 0.5
+            })
+        );
+        assert_eq!(td.data_type, NtType::ChassisSpeeds);
+
+        // Malformed payload degrades to raw bytes (never a guess).
+        let mut bad = TopicData::new("Odometry/Bad".into());
+        bad.type_str = Some("struct:ChassisSpeeds".into());
+        bad.apply(NtValue::Raw(vec![0u8; 23]), 2_000, now);
+        assert_eq!(bad.current, Some(NtValue::Raw(vec![0u8; 23])));
+        assert_eq!(bad.data_type, NtType::Raw);
+
+        // SwerveModuleStates decode for the field-card vectors.
+        let mut td = TopicData::new("Swerve/ModuleStates".into());
+        td.type_str = Some("struct:SwerveModuleStates".into());
+        let mut b = Vec::new();
+        for (a, s) in [(0.1f64, 2.0f64), (0.2, 2.0), (0.3, 2.0), (0.4, 2.0)] {
+            b.extend_from_slice(&a.to_le_bytes());
+            b.extend_from_slice(&s.to_le_bytes());
+        }
+        td.apply(NtValue::Raw(b), 3_000, now);
+        assert_eq!(
+            td.current,
+            Some(NtValue::SwerveModuleStates(vec![
+                (0.1, 2.0),
+                (0.2, 2.0),
+                (0.3, 2.0),
+                (0.4, 2.0)
+            ]))
+        );
+    }
+
+    #[test]
+    fn unknown_struct_type_stays_raw() {
+        let now = std::time::Instant::now();
+        let mut td = TopicData::new("Struct/Unknown".into());
+        td.type_str = Some("struct:SomethingElse".into());
+        td.apply(NtValue::Raw(vec![1u8, 2, 3]), 1_000, now);
+        assert_eq!(td.current, Some(NtValue::Raw(vec![1u8, 2, 3])));
     }
 }

@@ -593,9 +593,14 @@ fn value_lines(v: &riont_store::store::NtValue, width: usize) -> Vec<Line<'stati
             ellipsize(&v.format(), w),
             Style::default().fg(AMBER),
         ))],
-        // Decoded struct:Pose2d: string-like single-line card, warm amber
-        // like strings (format already carries the units/degree sign).
-        V::Pose2d { .. } => vec![Line::from(Span::styled(
+        // Decoded structs (Pose2d, ChassisSpeeds, Twist2d,
+        // SwerveModuleStates): string-like single-line card, warm amber
+        // like strings — each variant's `format()` carries its NAMED
+        // fields (vx / dx / per-module angle+speed), not `<N bytes>`.
+        V::Pose2d { .. }
+        | V::ChassisSpeeds { .. }
+        | V::Twist2d { .. }
+        | V::SwerveModuleStates(_) => vec![Line::from(Span::styled(
             ellipsize(&v.format(), w),
             Style::default().fg(AMBER),
         ))],
@@ -1217,6 +1222,10 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
     bx1 += sx;
     by0 += sy;
     by1 += sy;
+    // Exactly-one-topic rule (documented in CHANGELOG): a single decoded
+    // struct:SwerveModuleStates topic feeds ALL field cards; zero or
+    // multiple candidates draw no vectors rather than an ambiguous one.
+    let swerve = swerve_module_states_ui(app);
     let canvas = Canvas::default()
         .x_bounds([bx0, bx1])
         .y_bounds([by0, by1])
@@ -1287,15 +1296,41 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
             }
             for m in members {
                 if let Some(r) = &m.reading {
+                    // Mirror the heading with the position. The glyph's
+                    // heading unit vector is (sin θ, cos θ) — f64::sin_cos
+                    // returns (sin, cos) — so mirroring x → length − x
+                    // negates it: the mirrored heading is −θ, and red view
+                    // at stored heading θ must render EXACTLY like blue
+                    // view at −θ (with the position mirrored). NOTE: with
+                    // a (cos θ, sin θ) convention this would be π − θ; the
+                    // π−θ form here would point the arrow backwards.
+                    let rad = if red { -r.radians } else { r.radians };
                     draw_robot(
                         ctx,
                         (fx(r.x), r.y),
-                        r.radians,
+                        rad,
                         m.color,
                         app.config.field.robot_length_m,
                         app.config.field.robot_width_m,
                         dpm,
                     );
+                    // Swerve module vectors ride on every field card when
+                    // exactly one decoded SwerveModuleStates topic exists
+                    // (see `swerve_module_states_ui`). They are drawn in
+                    // the SAME mirrored frame as the robot glyph.
+                    if let Some(states) = &swerve {
+                        draw_swerve_vectors(
+                            ctx,
+                            (fx(r.x), r.y),
+                            rad,
+                            states,
+                            m.color,
+                            app.config.field.robot_length_m,
+                            app.config.field.robot_width_m,
+                            dpm,
+                            red,
+                        );
+                    }
                 }
             }
         });
@@ -1410,6 +1445,109 @@ pub(crate) fn draw_robot_style(
             seg(ctx, c, at(len / 2.0, 0.0));
         }
     }
+}
+
+/// Decoded `struct:SwerveModuleStates` feeding the field-card module
+/// vectors. Design decision (see CHANGELOG): if EXACTLY ONE such topic
+/// exists in the store it feeds ALL field cards; with zero or multiple
+/// candidates no vectors are drawn (an ambiguous source would put
+/// somebody else's wheel speeds on your robot).
+fn swerve_module_states_ui(app: &App) -> Option<Vec<(f64, f64)>> {
+    let mut found: Option<Vec<(f64, f64)>> = None;
+    let mut count = 0usize;
+    for t in app.store.topics.values() {
+        if let Some(riont_store::store::NtValue::SwerveModuleStates(states)) = &t.current {
+            count += 1;
+            found = Some(states.clone());
+        }
+    }
+    if count == 1 {
+        found
+    } else {
+        None
+    }
+}
+
+/// Swerve vector tuning: drawn length = |speed| × SCALE meters, clamped
+/// to MAX; below FLOOR m/s the vector is too short to read and is
+/// skipped. 0.15 m per m/s keeps full-speed drives within the footprint
+/// scale on a normal card.
+const SWERVE_VEC_SCALE: f64 = 0.15;
+const SWERVE_VEC_MAX: f64 = 0.5;
+const SWERVE_VEC_FLOOR_MPS: f64 = 0.02;
+
+/// Draw one robot's swerve module vectors: a line from each footprint
+/// corner along the module's steer direction, length proportional to
+/// speed (see the SWERVE_VEC_* tuning consts). Everything is drawn in
+/// the same MIRRORED frame the robot glyph uses (`rad` is already the
+/// mirrored heading, `c` the mirrored position). Skipped entirely when
+/// the footprint renders as the compact chevron (see `robot_style_for`:
+/// too small to read).
+fn draw_swerve_vectors(
+    ctx: &mut ratatui::widgets::canvas::Context,
+    c: (f64, f64),
+    rad: f64,
+    states: &[(f64, f64)],
+    color: Color,
+    len: f64,
+    wid: f64,
+    dpm: f64,
+    mirror: bool,
+) {
+    if robot_style_for(len * dpm) == "E" {
+        return;
+    }
+    for (a, b) in swerve_vector_segments(c, rad, states, len, wid, mirror) {
+        ctx.draw(&CanvasLine {
+            x1: a.0,
+            y1: a.1,
+            x2: b.0,
+            y2: b.1,
+            color,
+        });
+    }
+}
+
+/// Footprint-corner module-vector segments in the (possibly mirrored)
+/// render frame: one ((x1, y1), (x2, y2)) per drawable module. Module
+/// states come in WPILib order (FL, FR, RL, RR); module angles are
+/// ROBOT-RELATIVE, so the world direction is heading ± angle — and that
+/// sign FLIPS under the x-mirror (mirroring reverses relative angles,
+/// θ + a → π − θ − a), as does the left/right corner axis. Extra
+/// modules (up to the 8-module decode cap) have no corner and are not
+/// drawn. Pure geometry, unit-tested against the mirror identity.
+fn swerve_vector_segments(
+    c: (f64, f64),
+    rad: f64,
+    states: &[(f64, f64)],
+    len: f64,
+    wid: f64,
+    mirror: bool,
+) -> Vec<((f64, f64), (f64, f64))> {
+    let (hdx, hdy) = rad.sin_cos(); // (already mirrored) heading unit vector
+                                    // Perpendicular across the robot; under the x-mirror the left/right
+                                    // sides swap, so the axis flips sign.
+    let (pdx, pdy) = if mirror { (hdy, -hdx) } else { (-hdy, hdx) };
+    let at = |fl: f64, fw: f64| (c.0 + hdx * fl + pdx * fw, c.1 + hdy * fl + pdy * fw);
+    // WPILib module order FL, FR, RL, RR mapped onto the footprint
+    // corners (fl: ±len/2 forward, fw: ±wid/2 left+).
+    let corners = [
+        at(len / 2.0, wid / 2.0),   // front left
+        at(len / 2.0, -wid / 2.0),  // front right
+        at(-len / 2.0, wid / 2.0),  // rear left
+        at(-len / 2.0, -wid / 2.0), // rear right
+    ];
+    corners
+        .iter()
+        .zip(states)
+        .filter(|(_, (_, speed))| speed.abs() >= SWERVE_VEC_FLOOR_MPS)
+        .map(|(corner, (angle, speed))| {
+            let vlen = (speed.abs() * SWERVE_VEC_SCALE).clamp(SWERVE_VEC_FLOOR_MPS, SWERVE_VEC_MAX);
+            let dir = if mirror { rad - angle } else { rad + angle };
+            let (ddx, ddy) = dir.sin_cos();
+            (*corner, (corner.0 + ddx * vlen, corner.1 + ddy * vlen))
+        })
+        .collect()
 }
 
 /// Enlarged field view: a near-fullscreen popup with just the field and
@@ -1935,6 +2073,38 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::short_reason;
+
+    /// The swerve-vector mirror identity: rendering the SAME robot (same
+    /// module states, same order) in red view — mirrored position,
+    /// mirrored heading −θ (the glyph heading unit vector is
+    /// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
+    /// negates), `mirror = true` — must place each vector segment at the
+    /// x-mirror of the blue-view segment at (x, y, θ). Exact
+    /// real-coordinate check; the Canvas rasterizer's ±1-dot floor
+    /// asymmetry is a display artifact, not geometry.
+    #[test]
+    fn swerve_vector_mirror_geometry_matches_mirrored_blue() {
+        use super::swerve_vector_segments;
+        use std::f64::consts::PI;
+        let length = 16.541;
+        let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
+        let modules = [(0.3f64, 4.0f64), (-0.5, 4.0), (1.2, 4.0), (0.0, 0.0)];
+
+        let blue = swerve_vector_segments((x, y), theta, &modules, 0.9, 0.9, false);
+        // Zero-speed module is skipped; the rest draw.
+        assert_eq!(blue.len(), 3);
+
+        // Red view of the SAME robot: the renderer passes the mirrored
+        // position and the mirrored heading −θ with mirror = true.
+        let red = swerve_vector_segments((length - x, y), -theta, &modules, 0.9, 0.9, true);
+        assert_eq!(red.len(), blue.len());
+        for ((b1, b2), (r1, r2)) in blue.iter().zip(&red) {
+            assert!((length - r1.0 - b1.0).abs() < 1e-9, "{b1:?} vs {r1:?}");
+            assert!((r1.1 - b1.1).abs() < 1e-9, "{b1:?} vs {r1:?}");
+            assert!((length - r2.0 - b2.0).abs() < 1e-9, "{b2:?} vs {r2:?}");
+            assert!((r2.1 - b2.1).abs() < 1e-9, "{b2:?} vs {r2:?}");
+        }
+    }
 
     #[test]
     fn short_reason_maps_common_failures() {

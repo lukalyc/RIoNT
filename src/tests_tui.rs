@@ -858,6 +858,214 @@ fn robot_glyph_snapshots() {
 }
 
 // ---------------------------------------------------------------------------
+// Field-card alliance mirror + swerve vectors + struct decoding expansion
+// ---------------------------------------------------------------------------
+
+/// Braille-only content of the rendered screen (the field canvas): colors
+/// and chrome ignored, so renders compare as glyph geometry.
+fn braille_screen(t: &mut Tui) -> Vec<String> {
+    t.render()
+        .into_iter()
+        .map(|l| {
+            l.chars()
+                .filter(|c| ('\u{2800}'..='\u{28ff}').contains(c))
+                .collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Raw render rows cropped to the robot glyph region (cols 53..85, rows
+/// 14..25 at the 120x36 lone-field-card size — the glyph occupies roughly
+/// cols 58..75, rows 15..23; walls/marks sit outside). Needed because the
+/// mirrored WALL scene rasterizes with ±1-braille-dot asymmetry (Canvas
+/// floor-quantization is not mirror-symmetric), while the robot GLYPH is
+/// drawn from identical inputs in both views and must be dot-identical.
+fn robot_glyph_region(t: &mut Tui) -> Vec<String> {
+    t.render()
+        .iter()
+        .enumerate()
+        .filter(|(y, _)| (14..25).contains(y))
+        .map(|(_, l)| l.chars().skip(53).take(32).collect::<String>())
+        .collect()
+}
+
+/// Feed a Limelight-style botpose (x, y, yaw_deg) at the given topic.
+fn feed_botpose(t: &mut Tui, name: &str, x: f64, y: f64, yaw_deg: f64) {
+    t.feed(vec![(
+        name,
+        NtValue::DoubleArray(vec![x, y, 0.0, 0.0, 0.0, yaw_deg]),
+    )]);
+}
+
+/// Feed raw struct bytes for `name`, tagging the topic with `type_str`
+/// first so the store's struct decode dispatch picks it up (in prod the
+/// announce metadata carries it; here the wire path is simulated).
+fn feed_raw_struct(t: &mut Tui, name: &str, type_str: &str, bytes: Vec<u8>) {
+    t.app.store.ensure(name).type_str = Some(type_str.into());
+    t.feed(vec![(name, NtValue::Raw(bytes))]);
+}
+
+fn swerve_payload(states: &[(f64, f64)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (a, s) in states {
+        b.extend_from_slice(&a.to_le_bytes());
+        b.extend_from_slice(&s.to_le_bytes());
+    }
+    b
+}
+
+/// Regression: red view at stored heading θ must render the robot glyph
+/// EXACTLY like blue view at −θ (the glyph's heading unit vector is
+/// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
+/// negates; a (cos θ, sin θ) convention would give π − θ). The robot
+/// POSITION was always mirrored via fx(); the heading was not, so
+/// red-view robots faced the wrong way.
+#[test]
+fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
+    use std::f64::consts::PI;
+    let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
+
+    let mut blue = Tui::new();
+    blue.connect();
+    // The mirrored-scene blue equivalent: position mirrored, heading −θ.
+    let field_len = blue.app.field_map.length_m;
+    feed_botpose(
+        &mut blue,
+        "SmartDashboard/botpose_wpiblue",
+        field_len - x,
+        y,
+        (-theta).to_degrees(),
+    );
+    blue.pin_via_search("botpose");
+
+    let mut red = Tui::new();
+    red.connect();
+    red.app.config.field.alliance = "red".into();
+    feed_botpose(
+        &mut red,
+        "SmartDashboard/botpose_wpiblue",
+        x,
+        y,
+        theta.to_degrees(),
+    );
+    red.pin_via_search("botpose");
+    // Crop to the glyph: see `robot_glyph_region` (the wall scene's ±1-dot
+    // rasterization asymmetry under mirroring is not part of the contract).
+    let red_screen = robot_glyph_region(&mut red);
+    let blue_screen = robot_glyph_region(&mut blue);
+
+    assert_eq!(red_screen, blue_screen, "red @ θ must equal blue @ −θ");
+    // Sanity: the glyph must actually be IN the crop (guard against the
+    // window drifting away from the robot and passing vacuously).
+    assert!(
+        blue_screen
+            .iter()
+            .any(|l| l.chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))),
+        "robot glyph must appear in the crop"
+    );
+}
+
+/// Struct decoding expansion (ROADMAP 6): a `struct:ChassisSpeeds`
+/// topic's binary payload renders its NAMED fields, not `<24 bytes>`.
+#[test]
+fn struct_chassis_speeds_renders_named_fields() {
+    let mut t = Tui::new();
+    t.connect();
+    let mut b = Vec::new();
+    b.extend_from_slice(&1.25f64.to_le_bytes());
+    b.extend_from_slice(&0.0f64.to_le_bytes());
+    b.extend_from_slice(&0.5f64.to_le_bytes());
+    feed_raw_struct(&mut t, "Odometry/ChassisSpeeds", "struct:ChassisSpeeds", b);
+    t.pin_via_search("ChassisSpeeds");
+    let text = t.text();
+    assert!(text.contains("vx 1.25"), "{text}");
+    assert!(!text.contains("<24 bytes>"), "{text}");
+}
+
+/// Swerve module vectors (ROADMAP 4): with exactly one decoded
+/// `struct:SwerveModuleStates` topic in the store, the field card draws
+/// each module's vector off the robot footprint corners.
+#[test]
+fn swerve_vectors_draw_on_the_field_card() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+    assert!(!baseline.is_empty());
+
+    feed_raw_struct(
+        &mut t,
+        "Swerve/ModuleStates",
+        "struct:SwerveModuleStates",
+        swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+    );
+    let with_vectors = braille_screen(&mut t);
+    assert_ne!(
+        with_vectors, baseline,
+        "module vectors must change the canvas"
+    );
+}
+
+/// The exactly-one-topic rule: with ZERO or MULTIPLE decoded
+/// SwerveModuleStates topics, no vectors are drawn (ambiguous source).
+#[test]
+fn swerve_vectors_require_exactly_one_module_states_topic() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+
+    // TWO candidate topics: the rule refuses both.
+    for name in ["Swerve/FrontStates", "Swerve/RearStates"] {
+        feed_raw_struct(
+            &mut t,
+            name,
+            "struct:SwerveModuleStates",
+            swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+        );
+    }
+    assert_eq!(
+        braille_screen(&mut t),
+        baseline,
+        "two swerve topics must draw no vectors"
+    );
+
+    // Unpin one candidate (x via the watchlist cursor — simplest: drop the
+    // second topic from the store) leaves exactly one: vectors appear.
+    t.app.store.topics.remove("Swerve/RearStates");
+    let with_vectors = braille_screen(&mut t);
+    assert_ne!(with_vectors, baseline, "one swerve topic draws vectors");
+}
+
+/// Vectors are skipped entirely when the footprint renders as the compact
+/// chevron (below the robot_style_for threshold: too small to read).
+#[test]
+fn swerve_vectors_skip_on_compact_glyphs() {
+    let mut t = Tui::new();
+    t.connect();
+    t.app.config.field.robot_length_m = 0.25;
+    t.app.config.field.robot_width_m = 0.25;
+    feed_botpose(&mut t, "SmartDashboard/botpose_wpiblue", 5.0, 4.0, 0.0);
+    t.pin_via_search("botpose");
+    let baseline = braille_screen(&mut t);
+
+    feed_raw_struct(
+        &mut t,
+        "Swerve/ModuleStates",
+        "struct:SwerveModuleStates",
+        swerve_payload(&[(0.3, 4.0), (-0.5, 4.0), (1.2, 4.0), (0.0, 4.0)]),
+    );
+    assert_eq!(
+        braille_screen(&mut t),
+        baseline,
+        "compact glyphs must draw no vectors"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Watchlist vertical scroll (many pins: the cursor must never leave view)
 // ---------------------------------------------------------------------------
 
