@@ -39,17 +39,9 @@ is_red = fms.getBooleanTopic("IsRedAlliance").publish()
 
 t0 = time.time()
 n = 0
-import os
-quiet = os.environ.get("RIO_QUIET") == "1"
 while True:
     t = time.time() - t0
     n += 1
-    if quiet and n > 5:
-        # Static-telemetry simulation: stop publishing changed values
-        # (NT4 pushes only changes). The ntcore server stays alive and
-        # keeps answering RTT echoes — CODE must read RUNNING.
-        time.sleep(0.05)
-        continue
     shooter_rpm.set(4600.0 + 100.0 * math.sin(t * 3))
     gyro.set(math.degrees(math.sin(t) * 0.5))
     battery.set(12.6 - 0.02 * math.sin(t))

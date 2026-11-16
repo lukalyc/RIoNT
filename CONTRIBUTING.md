@@ -58,7 +58,8 @@ messages as text frames, MessagePack value frames
 `[pubuid, timestamp_us, type, value]` as binary frames (validated against
 ntcore 2026.2.2 source and a real ntcore server). Subscribe-all with fast
 periodic, clock sync via `-1` timestamp echo, publish with automatic
-retransmission, auto-reconnect with retry counter, 5 s connect timeout.
+retransmission, auto-reconnect forever with a 1.5 s backoff, 5 s connect
+timeout.
 
 ## Testing
 

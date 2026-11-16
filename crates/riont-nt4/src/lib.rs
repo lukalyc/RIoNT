@@ -47,16 +47,15 @@ const DT_STRING_ARRAY: u64 = 20;
 /// Things the client tells the UI.
 #[derive(Debug, Clone)]
 pub enum NtUpdate {
-    /// Trying to reach `target`; `attempt` counts retries since the last
-    /// successful connection (0 = first try).
-    Connecting {
-        target: String,
-        attempt: u32,
-    },
+    /// Trying to reach the configured target (an attempt is in flight).
+    Connecting,
     Connected {
         server_info: String,
     },
-    Disconnected(String),
+    /// The session died; the link is down. The cause is logged by the
+    /// client (debug log), not reported here: nothing in the UI displays
+    /// it, and RIONT retries forever.
+    Disconnected,
     /// (topic, value, server_timestamp_us) batch.
     Values(Vec<(String, NtValue, u64)>),
     /// Topic metadata arrived/changed. `None` fields mean "unchanged".
@@ -85,12 +84,8 @@ pub enum NtUpdate {
         written: NtValue,
         actual: Option<NtValue>,
     },
-    // The client measures these for clock-synced publishes. Rtt doubles
-    // as the consuming app's proof-of-life for its CODE indicator (an
-    // echo answered by the server proves the robot program alive); the
-    // raw rtt/offset VALUES stay unsurfaced in the driver-station HUD.
-    /// Round trip time in ms.
-    Rtt(f64),
+    // The client measures this for clock-synced publishes; the raw offset
+    // stays engine-internal (no HUD surface).
     #[allow(dead_code)]
     /// Best estimate of (server_time - local_epoch_time) in us.
     ClockOffset(f64),
@@ -193,13 +188,14 @@ pub async fn run_client(
     // Set by Retarget commands (from the in-app connect overlay); applied at
     // the top of the next loop iteration.
     let retarget_to: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let mut attempt: u32 = 0;
-    // Suppress duplicate-failure toasts: an unreachable target retries with
-    // the SAME reason every ~6.5s forever, which would churn the UI's
-    // 4-slot stack and evict everything else. A Disconnected update fires
-    // only when the reason changes (or after a session that had actually
-    // connected — a fresh drop after a live link is new information). The
-    // HUD keeps the persistent surface (reason + attempt count).
+    // Suppress duplicate-failure updates: an unreachable target retries with
+    // the SAME reason every ~6.5s forever, which would only churn the UI. A
+    // Disconnected update fires only when the reason changes (or after a
+    // session that had actually connected — a fresh drop after a live link
+    // is new information). The consuming app's offline surface is a live
+    // animation plus the address, so a suppressed repeat loses nothing an
+    // operator acts on; the cause itself stays in the debug log. (This is
+    // an optimization now that consumers treat the update idempotently.)
     let mut last_reason: Option<String> = None;
     // Pubuids NEVER reset across sessions: the server remembers
     // (client name, pubuid) publishers across reconnects, and a
@@ -211,12 +207,7 @@ pub async fn run_client(
     // the 3 s verification window exits silently.
     let session_gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
-        updates
-            .send(NtUpdate::Connecting {
-                target: target.clone(),
-                attempt,
-            })
-            .ok();
+        updates.send(NtUpdate::Connecting).ok();
         let outcome = session(
             &target,
             &updates,
@@ -241,7 +232,7 @@ pub async fn run_client(
             && reason != "reconnect requested"
             && last_reason.as_deref() != Some(reason.as_str())
         {
-            updates.send(NtUpdate::Disconnected(reason.clone())).ok();
+            updates.send(NtUpdate::Disconnected).ok();
         }
         last_reason = Some(reason);
         if had_connected {
@@ -265,9 +256,6 @@ pub async fn run_client(
             } else {
                 format!("{}:{}", t, NT_PORT)
             };
-            attempt = 0; // new target, fresh retry count
-        } else {
-            attempt = attempt.saturating_add(1);
         }
         session_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
@@ -925,7 +913,6 @@ fn handle_mp(
             let now = local_us() as f64;
             let rtt_us = now - client_sent;
             if rtt_us >= 0.0 {
-                updates.send(NtUpdate::Rtt(rtt_us / 1000.0)).ok();
                 let offset = ts as f64 + rtt_us / 2.0 - now;
                 updates.send(NtUpdate::ClockOffset(offset)).ok();
                 *clock_offset_us = offset;

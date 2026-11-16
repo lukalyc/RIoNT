@@ -27,14 +27,8 @@ fms.getBooleanTopic("IsRedAlliance").publish().set(True)
 fms.getIntegerTopic("MatchNumber").publish().set(42)
 match_time = fms.getDoubleTopic("MatchTime").publish()
 
-import os
-quiet = os.environ.get("DS_QUIET") == "1"
 n = 0
 while True:
     n += 1
-    if not quiet:
-        match_time.set(max(0.0, 135.0 - n * 0.05))
-        time.sleep(0.05)
-    else:
-        # DS idle: no changing values at all (static telemetry).
-        time.sleep(0.05)
+    match_time.set(max(0.0, 135.0 - n * 0.05))
+    time.sleep(0.05)

@@ -10,10 +10,45 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Changed
 
+- **HUD link state: no `COMM` label, animated `DISCONNECTED`.** The
+  header now reads `ONLINE (address)` or a red `DISCONNECTED` whose dots
+  march 0→3 and repeat while RIONT retries — every offline frame is an
+  attempt in flight, so the header never sits frozen on an unreachable
+  robot. The `(attempt N — cause)` detail is gone: the attempt count and
+  the failure cause were noise at HUD scale, leaving the address RIONT is
+  hammering as the only detail.
 - **Release asset names drop the rustc `unknown` vendor field:**
   `riont-0.8.1-x86_64-linux-gnu.tar.gz` instead of
   `x86_64-unknown-linux-gnu`. Windows (`pc-windows-msvc`) and macOS
   (`apple-darwin`) names are unchanged.
+- **`riont-nt4`'s `NtUpdate` no longer carries display payloads** (see
+  Removed). Anything else pinned to the engine crate by tag needs the
+  matching bump.
+
+### Removed
+
+- **The HUD's robot-code indicator (`CODE: RUNNING/STOPPED`).** The link
+  state and RUNTIME are the HUD's job; the code-alive heuristic needed two
+  freshness windows (value frames + RTT echo) and a red alarm that never
+  changed an operator's action. The header is now `ONLINE`/`DISCONNECTED`
+  plus `RUNTIME`. The dead plumbing went with it: `NtUpdate::Connecting`
+  drops its `target`/`attempt` fields, `NtUpdate::Disconnected` drops its
+  reason, and `NtUpdate::Rtt` is gone (the RTT still feeds the internal
+  clock offset for clock-synced publishes).
+- **The disconnect toast.** A dropped link is routine for a tool that
+  auto-reconnects forever, so an `[ERROR] disconnected (…)` toast fired on
+  every blip and evicted useful toasts. The animated `DISCONNECTED` is the
+  whole operator-facing signal. The cause is no longer reported to the UI
+  at all — it is written to the client's debug log (`RIONT_DEBUG=1`), so a
+  "why won't it connect" investigation needs that switch.
+
+### Fixed
+
+- **RUNTIME no longer creeps forward while a link is down.** Freezing the
+  counter at the value the session reached is now idempotent. Repeated
+  offline reports (a retry loop, or a second failure reason after a live
+  session) used to recompute the freeze, walking the counter forward and
+  showing a session longer than it ever lasted.
 
 ## [0.8.0] - 2026-09-10
 

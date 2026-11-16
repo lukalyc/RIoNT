@@ -51,6 +51,13 @@ const OVERLAY_MEMBERS: [(Color, Color); 4] = [
 const AMBER: Color = Color::Rgb(0xFA, 0xBD, 0x2F); // tree focus / strings
 const CYAN: Color = Color::Cyan; // numbers / watchlist focus / array brackets
 
+// HUD offline animation: the keyword plus 0→3 dots, one dot per step, so a
+// full loop takes 1.6 s — slow enough to read, fast enough to prove the app
+// is alive.
+const OFFLINE_KEYWORD: &str = "DISCONNECTED";
+const MAX_DOTS: usize = 3;
+const DOT_STEP_MS: u128 = 400;
+
 fn bold(s: impl Into<String>) -> Span<'static> {
     Span::styled(s.into(), Style::default().add_modifier(Modifier::BOLD))
 }
@@ -145,18 +152,6 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         .next()
         .unwrap_or(&app.target)
         .to_string();
-    // Flash the reconnecting indicator at ~2 Hz (amber = retry loop).
-    let blink_on = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_millis() < 500)
-        .unwrap_or(true);
-    let amber_style = Style::default().fg(AMBER).add_modifier(Modifier::BOLD);
-
-    // The client already knows WHY the link dropped — surface a SHORT,
-    // humanized cause (raw OS error strings like "No connection could be
-    // made because the target machine actively refused it. (os error
-    // 10061)" are unreadable at HUD scale) plus the retry count.
-    let reason = short_reason(&app.disconnect_reason.clone().unwrap_or_default());
     let comm = if app.connected {
         Span::styled(
             format!("ONLINE ({})", ip),
@@ -164,63 +159,25 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         )
-    } else if app.retry_attempt > 0 {
-        // Retry loop: keyword whole (never ellipsized), attempt count and
-        // short cause quiet and dim — glanceable, not shouty.
-        if blink_on {
-            Span::styled("RECONNECTING", amber_style)
-        } else {
-            dim("RECONNECTING")
-        }
-    } else if !reason.is_empty() {
-        // Just dropped, retry counter not yet ticking: the red state the
-        // README promises, finally reachable — and carrying the cause.
-        Span::styled(
-            "DISCONNECTED",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )
-    } else if app.connecting {
-        // First connect: no reason yet, no attempt — plain amber.
-        Span::styled("RECONNECTING...", amber_style)
     } else {
+        // RIONT retries forever (README: "auto-reconnects forever"), so
+        // EVERY offline frame is an attempt in flight — the very first one
+        // included. The marching dots are what says so: a frozen keyword on
+        // an unreachable robot reads as a hung app. The failure cause is NOT
+        // here (the client logs it): the HUD carries only what an operator
+        // acts on — that the link is down, and which address is hammered.
         Span::styled(
-            "DISCONNECTED",
+            offline_label(now_ms()),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
     };
-    // Attempt count + humanized reason ride along dim, after the keyword.
-    // While OFFLINE the retried target is named too: an operator coming
-    // back after a crash must see WHICH address RIONT is hammering (a
-    // stale last_target otherwise reads as "connected to the sim" ghost
-    // state).
+    // While OFFLINE the retried target is named too: an operator coming back
+    // after a crash must see WHICH address RIONT is hammering (a stale
+    // last_target otherwise reads as "connected to the sim" ghost state).
     let mut comm = vec![comm];
     if !app.connected {
-        if !reason.is_empty() {
-            let detail = match (app.connected, app.retry_attempt) {
-                (_, 0) => format!(" — {}", reason),
-                (_, n) => format!(" (attempt {} — {})", n, reason),
-            };
-            comm.push(dim(ellipsize_left(
-                &detail,
-                (area.width as usize).saturating_sub(60).clamp(12, 40),
-            )));
-        }
         comm.push(dim(format!(" {}", ip)));
     }
-
-    let code = match app.code_running() {
-        Some(true) => Span::styled(
-            "RUNNING",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(false) => Span::styled(
-            "STOPPED",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-        None => dim("--"),
-    };
 
     // RUNTIME: how long the current connection has been up, measured
     // locally. Starts from zero on every connect (a robot-code restart
@@ -240,13 +197,10 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         // Single source of truth: Cargo.toml's `version`, baked in at
         // compile time. Never hardcode a version string here.
         bold(format!("RIONT v{}", env!("CARGO_PKG_VERSION"))),
-        dim("  [COMM: "),
+        dim("  ["),
     ];
     line.extend(comm);
     line.extend([
-        dim("]"),
-        dim("  [CODE: "),
-        code,
         dim("]"),
         dim("  [RUNTIME: "),
         plain(runtime),
@@ -256,6 +210,29 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
+/// Wall-clock milliseconds, for the HUD's offline animation. The render
+/// loop is stateless and ticks at 120 Hz, so the phase is derived here
+/// instead of being tracked on `App`. Wall clock (not `Instant`) keeps the
+/// phase identical across frames and pins it at step 0 before the epoch,
+/// which still renders a readable keyword.
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Animated offline keyword: `DISCONNECTED`, then 0→3 dots, then back to
+/// none, forever. Padded to its widest frame so the address and RUNTIME to
+/// its right stay put while the dots march — a HUD that shimmies at 2.5 Hz
+/// is worse than one that pauses.
+fn offline_label(now: u128) -> String {
+    let dots = (now / DOT_STEP_MS) as usize % (MAX_DOTS + 1);
+    let label = format!("{}{}", OFFLINE_KEYWORD, ".".repeat(dots));
+    let width = OFFLINE_KEYWORD.len() + MAX_DOTS;
+    format!("{label:<width$}")
+}
+
 fn fmt_hms(total_secs: u64) -> String {
     format!(
         "{:02}:{:02}:{:02}",
@@ -263,41 +240,6 @@ fn fmt_hms(total_secs: u64) -> String {
         (total_secs / 60) % 60,
         total_secs % 60
     )
-}
-
-/// Humanize a raw disconnect reason into a short HUD label. The full
-/// error string still goes to toasts; the HUD only has room for the
-/// diagnosis. Known Windows/ntcore failure modes map to their names —
-/// anything unrecognized stays "connection failed" rather than leaking
-/// a half-ellipsized OS message onto the HUD.
-fn short_reason(reason: &str) -> String {
-    if reason.is_empty() {
-        return String::new();
-    }
-    let r = reason.to_lowercase();
-    let label = if r.contains("10061") || r.contains("refused") {
-        "connection refused"
-    } else if r.contains("10060") || r.contains("timed out") || r.contains("timeout") {
-        "timed out"
-    } else if r.contains("10065") || r.contains("unreachable") {
-        "host unreachable"
-    } else if r.contains("10054") || r.contains("reset") {
-        "connection reset"
-    } else if r.contains("10051") || r.contains("network down") || r.contains("unreachable network")
-    {
-        "network down"
-    } else if r.contains("10049") || r.contains("not valid") && r.contains("address") {
-        "bad address"
-    } else if r.contains("resolve") || r.contains("name or service") || r.contains("dns") {
-        "dns lookup failed"
-    } else if r.contains("no route") {
-        "no route to host"
-    } else if r.contains("rejected") || r.contains("handshake") || r.contains("subprotocol") {
-        "handshake failed"
-    } else {
-        "connection failed"
-    };
-    label.to_string()
 }
 
 /// Humanized Δ since last change: `20ms`, `14.2s`, `3.4m`, `1.2h`.
@@ -2174,8 +2116,6 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::short_reason;
-
     /// The swerve-vector mirror identity: rendering the SAME robot (same
     /// module states, same order) in red view — mirrored position,
     /// mirrored heading −θ (the glyph heading unit vector is
@@ -2208,23 +2148,31 @@ mod tests {
         }
     }
 
+    /// The offline animation must be a repeating 0→3-dot loop — not a
+    /// static keyword, and not a one-shot that sticks at three dots.
     #[test]
-    fn short_reason_maps_common_failures() {
-        // Real Windows error text (the exact string from the bug report).
-        assert_eq!(
-            short_reason(
-                "connect: No connection could be made because the target machine actively refused it. (os error 10061)"
-            ),
-            "connection refused"
-        );
-        assert_eq!(short_reason("connect timeout"), "timed out");
-        assert_eq!(
-            short_reason(
-                "connect: The remote computer refused the network connection. (os error 1225)"
-            ),
-            "connection refused"
-        );
-        assert_eq!(short_reason("write publish"), "connection failed");
-        assert_eq!(short_reason(""), "");
+    fn offline_label_animates_three_dots_and_repeats() {
+        use super::{offline_label, DOT_STEP_MS, MAX_DOTS, OFFLINE_KEYWORD};
+        let at_step = |step: u128| offline_label(step * DOT_STEP_MS);
+        // Trailing padding is excluded: only the keyword and the dots read.
+        let frame = |step: u128| at_step(step).trim_end().to_string();
+        assert_eq!(frame(0), "DISCONNECTED");
+        assert_eq!(frame(1), "DISCONNECTED.");
+        assert_eq!(frame(2), "DISCONNECTED..");
+        assert_eq!(frame(3), "DISCONNECTED...");
+        // The 4th step wraps back to the bare keyword.
+        assert_eq!(frame(4), "DISCONNECTED");
+        assert_eq!(frame(5), "DISCONNECTED.");
+        // Phase is derived from the clock's milliseconds, not the step
+        // count: a ragged tick (render at 120 Hz) lands mid-step, never
+        // between dots.
+        assert_eq!(offline_label(DOT_STEP_MS * 3 + 1).trim_end(), frame(3));
+        // Every frame has the SAME width, so the address and RUNTIME after
+        // it never move while the dots march.
+        let width = at_step(0).chars().count();
+        assert_eq!(width, OFFLINE_KEYWORD.len() + MAX_DOTS);
+        for step in 0..8 {
+            assert_eq!(at_step(step).chars().count(), width, "step {step}");
+        }
     }
 }

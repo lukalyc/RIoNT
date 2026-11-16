@@ -262,8 +262,19 @@ class Tui:
 # ---------------------------------------------------------------------------
 
 def wait_online(tui, timeout=15.0):
-    return wait_until(lambda: "COMM: ONLINE" in tui.header(), timeout=timeout,
-                      desc="COMM: ONLINE")
+    return wait_until(lambda: "ONLINE" in tui.header(), timeout=timeout,
+                      desc="ONLINE")
+
+
+def hud_topic_count(tui):
+    """Topics the HUD reports (0 while the count still reads `0 topics`).
+
+    Topic announcements arrive asynchronously AFTER the connect handshake,
+    so a fresh Tui reaches ONLINE before any topic exists. Content checks
+    must poll this, never read the header once.
+    """
+    m = re.search(r"(\d+) topics", tui.header())
+    return int(m.group(1)) if m else 0
 
 
 def esc_to_tree(tui):
@@ -367,21 +378,20 @@ def scenario_boot(server, harness, tui):
             {"name": "Test", "topics": ["SmartDashboard/Shooter RPM", "Swerve/*"]},
             {"name": "Dense", "topics": ["Swerve/*", "SmartDashboard/*"]},
         ]))
-    check("boot TUI reaches COMM ONLINE", wait_online(tui), tui.header())
-    # Values stream right after connect: wait for the value-derived HUD
-    # (CODE RUNNING) before any value assertions downstream.
-    check("robot frames stream (CODE RUNNING)", wait_until(
-        lambda: "CODE: RUNNING" in tui.header(),
-        timeout=10), tui.header())
+    check("boot TUI reaches ONLINE", wait_online(tui), tui.header())
+    # Topic announcements stream right after connect: wait for the live
+    # topic count before any value assertions downstream.
+    check("robot topics stream", wait_until(
+        lambda: hud_topic_count(tui) > 0, timeout=10), tui.header())
 
 
 def scenario_hud(tui):
     h = tui.header()
     check("HUD shows ONLINE + target ip", "ONLINE" in h and "127.0.0.1" in h, h)
-    check("HUD shows CODE RUNNING", "CODE: RUNNING" in h, h)
     check("HUD shows RUNTIME clock", "RUNTIME: " in h and ":" in h.split("RUNTIME: ")[1], h)
-    m = re.search(r"(\d+) topics", h)
-    check("HUD topic count > 10", m and int(m.group(1)) > 10, h)
+    check("HUD topic count > 10",
+          wait_until(lambda: hud_topic_count(tui) > 10, timeout=10),
+          tui.header())
     check("HUD no global Hz / rtt metric", " Hz" not in h and "rtt" not in h, h)
     v = cargo_version()
     check("HUD version == Cargo.toml version (dynamic)",
@@ -536,11 +546,13 @@ def scenario_stacking(tui):
 
 def scenario_reconnect(tui, server):
     server.stop()
+    # Sync on the state token, never the full label: the offline keyword is
+    # DISCONNECTED with a marching-dots animation, so its exact text varies
+    # frame to frame (harness rule: a wording change must not break this).
     check("HUD leaves ONLINE when server dies", wait_until(
-        lambda: "RECONNECTING" in tui.header() or "DISCONNECTED" in tui.header(),
-        timeout=15), tui.header())
-    check("disconnect surfaces [ERROR]", wait_until(
-        lambda: "[ERROR]" in tui.text(), timeout=6), tui.text()[-400:])
+        lambda: "DISCONNECT" in tui.header(), timeout=15), tui.header())
+    # A drop is deliberately silent (no [ERROR] toast): RIONT retries on its
+    # own, so the animated keyword is the whole signal.
     server.start()
     check("HUD returns ONLINE after server restart", wait_online(tui), tui.header())
     check("values flow again after reconnect",
@@ -566,7 +578,7 @@ def scenario_retarget(tui):
     tui.send("127.0.0.1:5999")
     tui.send("\r")
     check("dead target leaves ONLINE", wait_until(
-        lambda: "COMM: ONLINE" not in tui.header(), timeout=15), tui.header())
+        lambda: "ONLINE" not in tui.header(), timeout=15), tui.header())
     tui.tap("c", lambda: "[CONNECT TARGET]" in tui.text(), desc="picker again")
     tui.send("127.0.0.1:5814")
     tui.send("\r")
@@ -601,7 +613,7 @@ def scenario_last_target_persist():
     CURRENT["screen"] = tui2.text
     try:
         check("boot on dead target leaves ONLINE",
-              wait_until(lambda: "COMM: ONLINE" not in tui2.header(), timeout=8),
+              wait_until(lambda: "ONLINE" not in tui2.header(), timeout=8),
               tui2.header())
         tui2.tap("c", lambda: "[CONNECT TARGET]" in tui2.text(), desc="picker opens")
         tui2.send("127.0.0.1:5814")
@@ -793,13 +805,14 @@ def _scenario_viewport(label, cols, rows):
     tui = Tui(cols=cols, rows=rows)
     CURRENT["screen"] = tui.text
     try:
-        check(f"{label} {cols}x{rows}: TUI reaches COMM ONLINE",
+        check(f"{label} {cols}x{rows}: TUI reaches ONLINE",
               wait_online(tui), tui.header())
-        check(f"{label} {cols}x{rows}: values stream (CODE RUNNING)",
-              wait_until(lambda: "CODE: RUNNING" in tui.header(), timeout=10),
+        check(f"{label} {cols}x{rows}: topics stream",
+              wait_until(lambda: hud_topic_count(tui) > 0, timeout=10),
               tui.header())
         check(f"{label} {cols}x{rows}: tree renders topics",
-              "[+] SmartDashboard" in tui.text(), tui.text())
+              wait_until(lambda: "[+] SmartDashboard" in tui.text(),
+                         timeout=10), tui.text())
         check(f"{label} {cols}x{rows}: process stays alive", tui.alive,
               f"alive={tui.alive}")
         # Seeded folder-glob watchlist: the glob adopts exactly the three

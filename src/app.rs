@@ -65,18 +65,6 @@ pub struct Toast {
 }
 
 const TOAST_TTL_MS: u128 = 3500;
-/// CODE reads RUNNING while robot frames arrived within this window.
-/// Robot loops tick at 20-50 Hz, so 500 ms of silence reliably means the
-/// user program stopped publishing — while absorbing batch/scheduling gaps.
-pub const CODE_STALE_MS: u128 = 500;
-/// CODE also reads RUNNING while the robot's ntcore server answered our
-/// RTT echo within this window. The echo is an application-level ping
-/// (sent every 1 s, answered by the server — which lives INSIDE the robot
-/// program), so a fresh echo proves the robot code is running even when
-/// no topic value has changed for a while (static telemetry: parked arm,
-/// idle robot — NT4 pushes only CHANGED values). 2.5 s absorbs a few lost
-/// echoes without masking a genuinely dead link for long.
-pub const RTT_STALE_MS: u128 = 2500;
 
 /// Command palette entries (VS Code-style fuzzy finder, `:` / Ctrl+P).
 /// Each entry names its owning subsystem so the palette doubles as a
@@ -162,9 +150,7 @@ pub struct App {
 
     // connection
     pub connected: bool,
-    pub connecting: bool,
     pub server_info: String,
-    pub disconnect_reason: Option<String>,
     /// Local Instant the current connection was established: RUNTIME is
     /// elapsed-since-here. Set on every successful connect, so a reconnect
     /// (including after a robot-code restart drops the link) restarts the
@@ -174,14 +160,6 @@ pub struct App {
     /// the HUD keeps showing the runtime the session reached, instead of
     /// silently ticking on or blanking.
     pub runtime_at_disconnect: Option<std::time::Duration>,
-    /// Local Instant of the last received value batch: drives CODE RUNNING /
-    /// STOPPED (robot user loop alive = frames still streaming).
-    pub last_value_at: Option<std::time::Instant>,
-    /// Local Instant of the last RTT echo answered by the robot's ntcore
-    /// server. Secondary proof-of-life for CODE: the server answering a
-    /// ping means the robot program is alive, even mid a quiet-telemetry
-    /// stretch with no changed values.
-    pub last_rtt_at: Option<std::time::Instant>,
 
     /// Persistent configuration (~/.config/riont/config.json).
     pub config: crate::config::Config,
@@ -248,9 +226,6 @@ pub struct App {
     /// at startup, on `Field: Cycle Map`, and after a config-editor reload;
     /// cached so the 120 Hz render loop never touches the filesystem.
     pub field_map: crate::field::FieldMap,
-
-    // reconnect attempts since the last successful connection
-    pub retry_attempt: u32,
 }
 
 impl App {
@@ -274,13 +249,9 @@ impl App {
             store: Store::new(),
             target,
             connected: false,
-            connecting: true,
             server_info: String::new(),
             connected_since: None,
             runtime_at_disconnect: None,
-            disconnect_reason: None,
-            last_value_at: None,
-            last_rtt_at: None,
             config,
             expanded: HashSet::new(),
             tree_cursor: 0,
@@ -312,7 +283,6 @@ impl App {
             field_view: None,
             field_map: crate::field::FieldMap::builtin("2026-rebuilt")
                 .expect("default map is built in"),
-            retry_attempt: 0,
         };
         // Resolve the field map from the (possibly just-loaded) config; a
         // broken walls_file falls back to the built-in map with a warning.
@@ -360,9 +330,6 @@ impl App {
                 }
             }
             self.store.apply_value(name, v.clone(), *ts, now);
-        }
-        if !batch.is_empty() {
-            self.last_value_at = Some(now);
         }
     }
 
@@ -431,14 +398,7 @@ impl App {
 
     pub fn set_connected(&mut self, info: String) {
         self.connected = true;
-        self.connecting = false;
         self.server_info = info;
-        self.disconnect_reason = None;
-        self.retry_attempt = 0;
-        // Fresh session: any proof-of-life from the previous one (values,
-        // RTT echo) belongs to a different link and must not count.
-        self.last_value_at = None;
-        self.last_rtt_at = None;
         // RUNTIME restarts from zero on EVERY connect: a robot-code
         // restart drops the link, so a fresh session is a fresh counter.
         self.connected_since = Some(std::time::Instant::now());
@@ -446,36 +406,22 @@ impl App {
         self.toast(ToastKind::Success, format!("connected to {}", self.target));
     }
 
-    pub fn set_disconnected(&mut self, reason: String) {
+    /// The link is down: a session died, or the client is already trying
+    /// again. Deliberately silent — RIONT auto-reconnects forever, so a drop
+    /// is routine operation, not an error the operator must act on; the
+    /// HUD's animated `DISCONNECTED` is the whole signal.
+    ///
+    /// RUNTIME freezes at the value the session reached (and restarts from
+    /// zero on reconnect). The freeze is IDEMPOTENT: a retry loop reports
+    /// this state every attempt, and recomputing the freeze each time would
+    /// walk RUNTIME forward while the link is down.
+    pub fn set_disconnected(&mut self) {
         self.connected = false;
-        self.connecting = true;
-        self.disconnect_reason = Some(reason.clone());
-        // Freeze RUNTIME at the value the session reached — it stops
-        // ticking while disconnected (and restarts from zero on reconnect).
-        if let Some(since) = self.connected_since {
-            self.runtime_at_disconnect = Some(since.elapsed());
+        if self.runtime_at_disconnect.is_none() {
+            if let Some(since) = self.connected_since {
+                self.runtime_at_disconnect = Some(since.elapsed());
+            }
         }
-        self.toast(ToastKind::Error, format!("disconnected ({})", reason));
-    }
-
-    /// CODE block: Some(true) = RUNNING (frames streaming or the robot's
-    /// server answering our ping), Some(false) = STOPPED (connection alive
-    /// but no fresh frames AND no fresh echo), None = offline.
-    pub fn code_running(&self) -> Option<bool> {
-        if !self.connected {
-            return None;
-        }
-        let fresh = |t: Option<std::time::Instant>, ms: u128| {
-            t.map(|t| t.elapsed().as_millis() <= ms).unwrap_or(false)
-        };
-        Some(fresh(self.last_value_at, CODE_STALE_MS) || fresh(self.last_rtt_at, RTT_STALE_MS))
-    }
-
-    /// Record an RTT echo from the robot's ntcore server (the client pings
-    /// every 1 s; the echo proves the robot program — which hosts the
-    /// server — is still alive). See `code_running`.
-    pub fn note_rtt(&mut self, now: std::time::Instant) {
-        self.last_rtt_at = Some(now);
     }
 
     /// Drop toasts past their severity-scaled TTL.
@@ -1452,6 +1398,12 @@ impl App {
                 UiAction::None
             }
             Command::RestartRobotCode => {
+                // Check if the robot is connected before attempting to restart its code.
+                if !self.connected {
+                    self.toast(ToastKind::Warn, "robot is not connected");
+                    return UiAction::None;
+                }
+
                 // Primary method: background SSH to the robot (no NT topic
                 // involved). The client task spawns it asynchronously and
                 // reports the outcome as a toast.
@@ -1603,9 +1555,6 @@ impl App {
     }
 
     fn connect_to(&mut self, target: String) -> UiAction {
-        // Deliberate retarget, not a disconnect: clear the reason so the
-        // next Connecting update owns the HUD.
-        self.disconnect_reason = None;
         self.target = target.clone();
         // The new target is (almost always) a different robot: keeping the
         // old store would render the previous robot's ghost topics, frozen
@@ -1616,8 +1565,6 @@ impl App {
         self.store.topics.clear();
         self.connected_since = None;
         self.runtime_at_disconnect = None;
-        self.last_value_at = None;
-        self.last_rtt_at = None;
         self.tree_cursor = 0;
         self.clamp_watchlist_cursor();
         self.toast(ToastKind::Info, format!("connecting to {}...", target));

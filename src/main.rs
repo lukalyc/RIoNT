@@ -324,13 +324,11 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
             // network updates
             Some(update) = update_rx.recv() => {
                 match update {
-                    NtUpdate::Connecting { target, attempt } => {
-                        app.retry_attempt = attempt;
-                        app.connecting = true;
-                        app.connected = false;
-                        // After a disconnect, the DISCONNECTED state in the
-                        // HUD stays up while the client retries.
-                        let _ = target;
+                    NtUpdate::Connecting => {
+                        // An attempt is in flight: the link is down, and the
+                        // last session's RUNTIME stays frozen until a session
+                        // actually connects.
+                        app.set_disconnected();
                     }
                     NtUpdate::Connected { server_info } => {
                         app.set_connected(server_info);
@@ -347,7 +345,10 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                             app.toast(app::ToastKind::Warn, format!("save config: {}", e));
                         }
                     }
-                    NtUpdate::Disconnected(reason) => app.set_disconnected(reason),
+                    // The client already logged the reason (debug log); the
+                    // HUD only needs the state change — a disconnect is normal
+                    // here (RIONT retries forever), not an error to shout.
+                    NtUpdate::Disconnected => app.set_disconnected(),
                     NtUpdate::Values(batch) => {
                         let now = Instant::now();
                         app.apply_values(batch, now);
@@ -379,12 +380,8 @@ async fn async_main(target: &str) -> anyhow::Result<()> {
                     NtUpdate::PublishVerified { topic, written, actual } => {
                         app.on_publish_verified(&topic, &written, &actual);
                     }
-                    // RTT echoes double as the robot program's
-                    // proof-of-life for the CODE indicator; clock offset
-                    // stays engine-internal (clock-synced publishes).
-                    NtUpdate::Rtt(_) => {
-                        app.note_rtt(Instant::now());
-                    }
+                    // The clock offset is engine-internal: it tunes
+                    // clock-synced publishes and never reaches the HUD.
                     NtUpdate::ClockOffset(_) => {}
                 }
             }

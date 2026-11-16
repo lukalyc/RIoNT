@@ -160,15 +160,16 @@ fn braille_chars(s: &str) -> usize {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn hud_online_shows_comm_code_runtime_and_cargo_version() {
+fn hud_online_shows_link_runtime_and_cargo_version() {
     let mut t = Tui::new();
     t.connect();
     t.feed_battery();
     let l0 = t.render().remove(0);
-    assert!(l0.contains("COMM: ONLINE"), "{l0}");
+    assert!(l0.contains("ONLINE"), "{l0}");
     assert!(l0.contains("127.0.0.1"), "{l0}");
-    assert!(l0.contains("CODE: RUNNING"), "{l0}");
     assert!(l0.contains("RUNTIME: "), "{l0}");
+    // The header carries no robot-code indicator: link state + RUNTIME.
+    assert!(!l0.contains("CODE"), "{l0}");
     // Version comes from Cargo.toml at compile time — this test doubles as
     // the version-release check (the E2E harness asserts the same thing).
     assert!(
@@ -187,7 +188,7 @@ fn runtime_restarts_from_zero_on_reconnect() {
     assert!(l0.contains("RUNTIME: 01:01:01"), "{l0}");
 
     // Disconnect freezes the counter at the reached value...
-    t.app.set_disconnected("ws closed".into());
+    t.app.set_disconnected();
     let l0 = t.render().remove(0);
     assert!(l0.contains("RUNTIME: 01:01:01"), "{l0}");
 
@@ -204,65 +205,64 @@ fn runtime_is_blank_before_the_first_connection() {
     assert!(l0.contains("RUNTIME: --:--:--"), "{l0}");
 }
 
+/// A retry loop reports the offline state on every attempt: freezing RUNTIME
+/// must be idempotent, or the counter walks forward while the link is down
+/// (and the HUD then shows a session longer than it ever lasted).
 #[test]
-fn hud_disconnect_shows_humanized_reason_not_raw_os_error() {
+fn runtime_freeze_is_idempotent_across_retry_attempts() {
     let mut t = Tui::new();
     t.connect();
-    t.app.set_disconnected(
-        "connect: No connection could be made because the target machine \
-         actively refused it. (os error 10061)"
-            .into(),
-    );
-    let text = t.text();
-    assert!(
-        text.contains("DISCONNECTED") || text.contains("RECONNECTING"),
-        "{text}"
-    );
-    assert!(text.contains("connection refused"), "{text}");
-    // Humanized contract: raw OS error spam never reaches the HUD.
-    assert!(!text.contains("os error"), "{text}");
+    t.app.connected_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(90));
+    let toasts_before = t.app.toasts.len();
+    t.app.set_disconnected();
+    // A dropped link is not an error: RIONT retries on its own, so the
+    // state change must stay silent (the HUD keyword is the whole signal).
+    assert_eq!(t.app.toasts.len(), toasts_before, "a drop must not toast");
+    let frozen = t.app.runtime_at_disconnect;
+    assert!(frozen.is_some(), "freeze must latch on the first drop");
+
+    // A later attempt finds the session still "aging"; the frozen value
+    // must not move with it.
+    t.app.connected_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
+    t.app.set_disconnected();
+    assert_eq!(t.app.runtime_at_disconnect, frozen);
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RUNTIME: 00:01:30"), "{l0}");
 }
 
+/// Offline, the HUD carries the animated keyword and the address, nothing
+/// else: no attempt count and no reason text (`(attempt 3 — timed out)` was
+/// unreadable at HUD scale).
 #[test]
-fn hud_stopped_when_robot_frames_go_quiet() {
+fn hud_offline_animates_the_keyword_without_count_or_reason() {
     let mut t = Tui::new();
-    t.connect();
-    t.feed_battery();
-    // Age the last frame past CODE_STALE_MS (500 ms).
-    t.app.last_value_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(1500));
+    t.app.set_disconnected();
     let l0 = t.render().remove(0);
-    assert!(l0.contains("CODE: STOPPED"), "{l0}");
+    let tail = l0
+        .find("DISCONNECTED")
+        .map(|i| &l0[i + "DISCONNECTED".len()..])
+        .unwrap_or_else(|| panic!("no DISCONNECTED keyword: {l0}"));
+    // 0..=3 dots — the phase comes from the wall clock, so the exact count
+    // is not assertable here (the pure label test covers the cycle).
+    let dots = tail.chars().take_while(|c| *c == '.').count();
+    assert!(dots <= 3, "{l0}");
+    assert!(l0.contains("127.0.0.1"), "{l0}");
+    assert!(!l0.contains("attempt"), "{l0}");
+    assert!(!l0.contains("timed out"), "{l0}");
 }
 
+/// Boot is already an attempt in flight: the header must render through the
+/// animated label from the very first frame, not sit frozen until a retry
+/// has failed. The three characters after the keyword are the dot field —
+/// dots or its padding, never the address — so this pins the render path to
+/// `offline_label` (the 0→3 cycle itself is covered by its unit test).
 #[test]
-fn code_running_while_the_server_answers_the_ping_despite_quiet_frames() {
-    // Regression: NT4 pushes only CHANGED values. A running robot whose
-    // telemetry happens to be static (arm parked, no motion) goes quiet
-    // for seconds while its code is perfectly alive — the old heuristic
-    // reported CODE: STOPPED against a green Driver Station. The 1 s
-    // RTT echo is an application-level ping answered BY the robot's
-    // ntcore server (which lives inside the robot program), so a fresh
-    // echo proves the code is running even with zero changed values.
+fn hud_animates_from_the_very_first_attempt() {
     let mut t = Tui::new();
-    t.connect();
-    t.feed_battery();
-    t.app.last_value_at =
-        Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
-    t.app.note_rtt(std::time::Instant::now());
     let l0 = t.render().remove(0);
-    assert!(l0.contains("CODE: RUNNING"), "{l0}");
-}
-
-#[test]
-fn code_stopped_when_frames_and_ping_are_both_stale() {
-    let mut t = Tui::new();
-    t.connect();
-    t.feed_battery();
-    t.app.last_value_at =
-        Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
-    t.app.last_rtt_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(30_000));
-    let l0 = t.render().remove(0);
-    assert!(l0.contains("CODE: STOPPED"), "{l0}");
+    let at = l0.find("DISCONNECTED").expect("keyword") + "DISCONNECTED".len();
+    let field: String = l0[at..].chars().take(3).collect();
+    assert!(field.chars().all(|c| c == '.' || c == ' '), "{l0}");
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn hud_while_offline_names_the_target_it_is_trying() {
     // operator could not tell WHICH one — "thought it was connected to
     // the simulation". The HUD must name the target whenever offline.
     let mut t = Tui::new();
-    t.app.set_disconnected("connect timeout".into());
+    t.app.set_disconnected();
     let l0 = t.render().remove(0);
     assert!(l0.contains("127.0.0.1"), "{l0}");
 }

@@ -167,8 +167,8 @@ def main():
         p.stdin.flush()
 
     try:
-        # boot + let values stream (CODE RUNNING, Hz samples, trail points)
-        wait(lambda: "COMM: ONLINE" in screen.display[0])
+        # boot + let values stream (Hz samples, trail points)
+        wait(lambda: "ONLINE" in screen.display[0])
         time.sleep(4.0)
         render_png(screen, os.path.join(OUT, "screenshot-main.png"))
 

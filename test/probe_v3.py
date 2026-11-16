@@ -136,7 +136,7 @@ def run_once(i):
     time.sleep(1.0)
 
     sim.terminate()
-    if not (wait("DISCONNECT") or wait("RECONNECTING")):
+    if not wait("DISCONNECT"):
         p.kill()
         return "NO-DISCONNECT"
 
@@ -200,8 +200,3 @@ subprocess.run(["pkill", "-f", "[t]est/server.py"], check=False)
 subprocess.run(["pkill", "-f", "[s]erver_rio_ntcore"], check=False)
 subprocess.run(["pkill", "-f", "[d]s_emu"], check=False)
 print(f"\n{crashes} crashes in {N} iterations")
-
-# NOTE: test/probe_quiet_code.py replays this probe with RIO_QUIET=1 /
-# DS_QUIET=1 by patching the source strings above — reword the replaced
-# lines (ROOT assignment, rio/ds Popen lines, the post-online sleep block)
-# and update that patcher in the same commit.

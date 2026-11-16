@@ -74,7 +74,7 @@ refused.
 Run BOTH test tiers (see "Testing workflow" below):
 
 - `cargo test` — in-process tests must pass; the
-  `hud_online_shows_comm_code_runtime_and_cargo_version` test enforces
+  `hud_online_shows_link_runtime_and_cargo_version` test enforces
   that the HUD matches `Cargo.toml` (read dynamically — no hardcoded
   string to update anywhere).
 - `cargo build`, then `python test/harness.py` — the end-to-end contract

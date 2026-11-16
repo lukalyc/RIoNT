@@ -64,14 +64,18 @@ from the release page — no Rust toolchain required.
 
 ## Step 4 — Verify
 
-1. `cargo test` — the `hud_online_shows_comm_code_uptime_and_cargo_version`
+1. `cargo test` — the `hud_online_shows_link_runtime_and_cargo_version`
    test proves the HUD shows the new version (dynamic compare, nothing to
    hand-edit).
 2. `conda run -n nt-tui-test python test/harness.py` — all contract
    checks pass; the HUD-version check reads Cargo.toml dynamically.
 3. `git grep` the OLD version string: it may remain only in
    `CHANGELOG.md` history — never in live code or HUD text.
-4. After the push: the GitHub release page shows the binaries and the
+4. HUD chrome changed since the last release (labels, indicators, layout)?
+   Regenerate the README hero images:
+   `conda run -n nt-tui-test python scripts/screenshot.py` — the mockups
+   must show the HUD this release actually ships.
+5. After the push: the GitHub release page shows the binaries and the
    CHANGELOG body.
 
 ## Common mistakes seen in this repo

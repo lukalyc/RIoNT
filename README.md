@@ -33,10 +33,13 @@ configure.
 - **Workspace presets** — `1`-`9` loads a named topic list from
   `config.json`. A trailing `/*` pins a whole subtree and adopts topics the
   robot starts publishing later.
-- **Driver-station HUD** — `COMM` (link state + failure reason),
-  `CODE` (robot code RUNNING/STOPPED) and `RUNTIME` (how long the current
-  connection has been up; freezes on disconnect, restarts from zero on
-  reconnect). No RTT, no global Hz.
+- **Driver-station HUD** — link state (`ONLINE (address)`, or a red
+  `DISCONNECTED` whose dots march while RIONT retries, next to the
+  address it is retrying) and `RUNTIME` (how long the current connection
+  has been up; freezes on disconnect, restarts from zero on reconnect).
+  No RTT, no global Hz, no attempt counter, no robot-code indicator: the
+  animation is the retry signal, and a dropped link is silent (RIONT
+  reconnects on its own).
 - **Telemetry neutrality** — rates and deltas render in muted grey; no
   stale flags, no alarms. Slow-but-alive topics are normal.
 - **Resilience** — auto-reconnects forever; the watchlist persists across

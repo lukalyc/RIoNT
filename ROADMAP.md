@@ -46,9 +46,15 @@ season-tested reason:
 
 ### Connection
 
-4. **Connection quality detail in the HUD.** Improve what `COMM`
-   communicates about link health beyond connected/reconnecting — exact
-   metrics to be decided during design.
+4. **Connection quality detail in the HUD.** Improve what the link-state
+   readout communicates about link health beyond connected/reconnecting
+   — exact metrics to be decided during design. Two candidates, both
+   removed while the HUD was simplified: a **robot-code-alive signal**
+   (must be one heartbeat, not the two-freshness-window heuristic that
+   read STOPPED against a live robot) and an **in-app failure cause**
+   (the client still logs it; the UI no longer surfaces it at all — it
+   must not come back as unsized HUD trivia). Each only returns if it
+   names an action an operator takes at the pit.
 
 ### UX / configuration (config-only by policy)
 
