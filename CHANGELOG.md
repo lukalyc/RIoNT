@@ -8,6 +8,15 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Added
+
+- **Collapse any field card into a compact numeric card (`v`).** Press `v`
+  on a hovered field card (or inside the enlarged `f` field view) to switch
+  between the braille field map and a regular compact numeric card showing its
+  coordinates — and press `v` again to expand it back. `Field: Toggle Pose
+  View on Active Card` in the command palette now works both ways too, and
+  collapsed topics persist in `config.json` (`field.disable_pose_topics`).
+
 ## [0.9.0] - 2026-11-19
 
 ### Added

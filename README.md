@@ -55,6 +55,7 @@ A keyboard-only NetworkTables (NT4) dashboard for FRC. Rust + ratatui. Pronounce
 | `Space` | pin topic to watchlist (dir = whole subtree) | unpin active card |
 | `x` | — | dismiss active card |
 | `f` | — | enlarged field view (toggle) on a hovered field card |
+| `v` | — | toggle pose card between field map and compact numeric card |
 | `o` | — | overlay: merge field cards into one composite field |
 | `e` / Enter | edit value (bool/int/double/string) | edit active card |
 | `Tab` | → watchlist | → tree |
@@ -92,8 +93,12 @@ and heading accurate.
   (`botpose`, `botpose_wpiblue`, `botpose_wpired`, `botpose_orb_*`, any
   camera prefix) and WPILib `struct:Pose2d` topics. Lookalikes — target
   poses, arbitrary `double[6]` arrays — stay ordinary value cards.
-- **Manual opt-in:** the palette command `Field: Toggle Pose View on Active
-  Card` forces a field card on a lookalike topic.
+- **Manual toggle (`v` / palette):** press `v` on any hovered pose card (or
+  inside the enlarged `f` field view) to collapse it into a compact
+  numeric card — and press `v` again to expand it back. The palette command
+  `Field: Toggle Pose View on Active Card` also collapses auto-detected pose
+  cards or forces a field card on a lookalike topic (saved in
+  `field.disable_pose_topics` / `field.force_pose_topics`).
 - **Overlay groups:** `o` on a field card merges it with other overlaid
   field cards into ONE composite card — compare odometry against a vision
   estimate on a single field, with a per-topic legend. `o` again unmerges.

@@ -871,6 +871,183 @@ fn overlay_members_collapse_into_one_watchlist_cell() {
     assert_eq!(cells[0], "SmartDashboard/botpose_wpiblue");
 }
 
+fn feed_pose2d(t: &mut Tui, name: &str, x: f64, y: f64, radians: f64) {
+    let topic = t.app.store.ensure(name);
+    topic.type_str = Some("struct:Pose2d".into());
+    topic.struct_schema =
+        Some("Pose2d{Translation2d{x:double, y:double}, Rotation2d{radians:double}}".into());
+    let mut b = Vec::with_capacity(24);
+    b.extend_from_slice(&x.to_le_bytes());
+    b.extend_from_slice(&y.to_le_bytes());
+    b.extend_from_slice(&radians.to_le_bytes());
+    t.feed_owned(vec![(name.to_string(), NtValue::Raw(b))]);
+}
+
+#[test]
+fn v_collapses_pose2d_field_card_to_numeric_card_and_expands_back() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_pose2d(&mut t, "Drive/Pose2d", 2.0, 4.1, 0.0);
+    t.pin_via_search("Drive/Pose2d");
+    assert!(braille_chars(&t.text()) > 20, "starts as field card");
+
+    // Focus the lone field card: hint shows `v card`.
+    t.key(KeyCode::Tab);
+    let hint_before = t.render().pop().expect("status row");
+    assert!(hint_before.contains("v card"), "{hint_before}");
+
+    // Collapse with `v`: renders compact numeric card with Pose2d numbers, no braille or toast.
+    t.app.toasts.clear();
+    t.key(KeyCode::Char('v'));
+    assert!(
+        t.app.toasts.is_empty(),
+        "toggling pose card must not emit a toast: {}",
+        t.toast_text()
+    );
+    let text = t.text();
+    assert_eq!(
+        braille_chars(&text),
+        0,
+        "collapsed card has no braille:\n{text}"
+    );
+    assert!(text.contains("WATCHLIST (1)"), "{text}");
+    assert!(text.contains("(2.00 m, 4.10 m, 0.0\u{00b0})"), "{text}");
+    assert!(
+        t.app
+            .config
+            .field
+            .disable_pose_topics
+            .contains(&"Drive/Pose2d".to_string()),
+        "opt-out persisted in config"
+    );
+    let hint_after = t.render().pop().expect("status row");
+    assert!(hint_after.contains("v field"), "{hint_after}");
+    assert!(!hint_after.contains("v card"), "{hint_after}");
+
+    // Press `v` again: expands back to braille field card silently and clears opt-out.
+    t.app.toasts.clear();
+    t.key(KeyCode::Char('v'));
+    assert!(
+        t.app.toasts.is_empty(),
+        "expanding pose card must not emit a toast: {}",
+        t.toast_text()
+    );
+    let restored = t.text();
+    assert!(
+        braille_chars(&restored) > 20,
+        "restored field card:\n{restored}"
+    );
+    assert!(t.app.config.field.disable_pose_topics.is_empty());
+}
+
+#[test]
+fn palette_toggle_pose_view_collapses_auto_detected_pose_topic() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed(vec![(
+        "SmartDashboard/botpose_wpiblue",
+        NtValue::DoubleArray(vec![2.0, 4.1, 0.0, 0.0, 0.0, 90.0]),
+    )]);
+    t.pin_via_search("botpose");
+    t.key(KeyCode::Tab);
+    assert!(t.app.is_field_card("SmartDashboard/botpose_wpiblue"));
+
+    let toggle_via_palette = |t: &mut Tui| {
+        t.key(KeyCode::Char(':'));
+        t.type_str("toggle pose");
+        t.key(KeyCode::Enter);
+    };
+
+    toggle_via_palette(&mut t);
+    assert!(!t.app.is_field_card("SmartDashboard/botpose_wpiblue"));
+    assert_eq!(braille_chars(&t.text()), 0);
+
+    toggle_via_palette(&mut t);
+    assert!(t.app.is_field_card("SmartDashboard/botpose_wpiblue"));
+    assert!(braille_chars(&t.text()) > 20);
+}
+
+#[test]
+fn v_in_enlarged_field_view_collapses_to_numeric_card() {
+    let mut t = Tui::new();
+    t.connect();
+    feed_pose2d(&mut t, "Drive/Pose2d", 1.25, 3.5, 0.0);
+    t.pin_via_search("Drive/Pose2d");
+    t.key(KeyCode::Tab);
+    t.key(KeyCode::Char('f'));
+    assert_eq!(t.app.mode, Mode::FieldView);
+    assert!(t.text().contains("v card  f/Esc close"));
+
+    t.key(KeyCode::Char('v'));
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert_eq!(t.app.focus, crate::app::Focus::Watchlist);
+    assert!(t.app.field_view.is_none());
+    let text = t.text();
+    assert_eq!(braille_chars(&text), 0, "{text}");
+    assert!(text.contains("(1.25 m, 3.50 m, 0.0\u{00b0})"), "{text}");
+}
+
+#[test]
+fn v_on_overlay_composite_collapses_all_members_and_restores_on_reexpand() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed(vec![(
+        "SmartDashboard/botpose_wpiblue",
+        NtValue::DoubleArray(vec![2.0, 4.1, 0.0, 0.0, 0.0, 90.0]),
+    )]);
+    feed_pose2d(&mut t, "Drive/Pose2d", 2.1, 4.0, 0.0);
+    t.app.watchlist = vec![
+        MatrixSource::Topic("SmartDashboard/botpose_wpiblue".into()),
+        MatrixSource::Topic("Drive/Pose2d".into()),
+    ];
+    t.app.config.field.overlay_topics = vec![
+        "SmartDashboard/botpose_wpiblue".into(),
+        "Drive/Pose2d".into(),
+    ];
+    assert_eq!(t.app.watchlist_cells().len(), 1);
+    assert!(braille_chars(&t.text()) > 20);
+
+    // Collapsing the composite turns both members into compact numeric cards.
+    t.key(KeyCode::Tab);
+    t.key(KeyCode::Char('v'));
+    assert_eq!(t.app.watchlist_cells().len(), 2);
+    assert_eq!(braille_chars(&t.text()), 0);
+
+    // Re-enabling both members restores the merged overlay card.
+    t.key(KeyCode::Char('v'));
+    t.key(KeyCode::Char('j'));
+    t.key(KeyCode::Char('v'));
+    assert_eq!(t.app.watchlist_cells().len(), 1);
+    assert!(braille_chars(&t.text()) > 20);
+}
+
+#[test]
+fn v_on_non_pose_scalar_card_stays_normal_card() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.pin_via_search("batt");
+    assert_eq!(
+        t.app.watchlist_cells(),
+        vec!["SmartDashboard/Battery Voltage"]
+    );
+    t.key(KeyCode::Tab);
+    t.app.toasts.clear();
+    let hint = t.render().pop().expect("status row");
+    assert!(
+        !hint.contains("v card") && !hint.contains("v field"),
+        "{hint}"
+    );
+
+    t.key(KeyCode::Char('v'));
+    assert!(!t.app.is_field_card("SmartDashboard/Battery Voltage"));
+    assert!(t
+        .app
+        .toasts
+        .iter()
+        .any(|m| m.msg.contains("not a pose topic")));
+}
+
 // ---------------------------------------------------------------------------
 // Presets (config-resident; the legacy .nt-views.json path is E2E-only)
 // ---------------------------------------------------------------------------

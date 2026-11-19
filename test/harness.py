@@ -718,6 +718,28 @@ def scenario_field(tui):
     check("field card draws braille", wait_until(
         lambda: tui.braille_chars() > 20, timeout=4), tui.text()[-500:])
 
+    # `v` collapses an auto-detected field card into a compact numeric card
+    # (persisted in field.disable_pose_topics), and `v` restores the field.
+    def _disabled_poses():
+        try:
+            with open(CFG_PATH) as fh:
+                return json.load(fh).get("field", {}).get("disable_pose_topics", [])
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    tui.send("\t")
+    tui.send("v")
+    check("v collapses field card to numeric card", wait_until(
+        lambda: tui.braille_chars() == 0
+        and "SmartDashboard/botpose_wpiblue" in _disabled_poses(),
+        timeout=4), tui.text()[-500:])
+    tui.send("v")
+    check("v restores collapsed pose back to field card", wait_until(
+        lambda: tui.braille_chars() > 20
+        and "SmartDashboard/botpose_wpiblue" not in _disabled_poses(),
+        timeout=4), tui.text()[-500:])
+    esc_to_tree(tui)
+
     # lookalike stays a value card
     goto_topic(tui, "targetpose")
     tui.tap(" ", lambda: True, desc="pin targetpose")

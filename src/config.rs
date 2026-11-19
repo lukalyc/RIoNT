@@ -68,6 +68,10 @@ pub struct FieldSettings {
     /// them). Managed by later user commands; persisted here only.
     #[serde(default)]
     pub force_pose_topics: Vec<String>,
+    /// Auto-detected pose topics explicitly collapsed to compact numeric cards
+    /// (`v` in the watchlist or `Field: Toggle Pose View on Active Card`).
+    #[serde(default)]
+    pub disable_pose_topics: Vec<String>,
     /// Field-card topics joined into ONE composite field card (overlay
     /// groups). Toggled per topic with `o` on a hovered field card;
     /// individual cards remain the default.
@@ -113,6 +117,7 @@ impl Default for FieldSettings {
             map: default_map(),
             walls_file: None,
             force_pose_topics: Vec::new(),
+            disable_pose_topics: Vec::new(),
             overlay_topics: Vec::new(),
             robot_length_m: default_robot_length_m(),
             robot_width_m: default_robot_width_m(),
@@ -400,5 +405,20 @@ mod tests {
         let slots = cfg.resolved_slots();
         assert_eq!(slots[0].as_ref().map(|s| s.name.as_str()), Some("bringup"));
         assert_eq!(slots[1].as_ref().map(|s| s.name.as_str()), Some("swerve"));
+    }
+
+    #[test]
+    fn disable_pose_topics_defaults_empty_and_roundtrips() {
+        let minimal: Config = serde_json::from_str("{}").expect("deserialize minimal");
+        assert!(minimal.field.disable_pose_topics.is_empty());
+
+        let mut cfg = Config::with_defaults();
+        cfg.field.disable_pose_topics = vec!["Drive/Pose2d".into()];
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let parsed: Config = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            parsed.field.disable_pose_topics,
+            vec!["Drive/Pose2d".to_string()]
+        );
     }
 }

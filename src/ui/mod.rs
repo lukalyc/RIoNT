@@ -1850,7 +1850,7 @@ fn draw_field_view(f: &mut Frame, app: &App) {
         }
     }
     lines.push(Line::from(dim(
-        "                                                                 f/Esc close",
+        "                                                      v card  f/Esc close",
     )));
     f.render_widget(Paragraph::new(lines), value_area);
 }
@@ -1859,6 +1859,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // Hints list only keys that work in the current state — the empty
     // canvas drops its dead card keys (h/j/k/l, x, e, spc) instead of
     // advertising them.
+    let active_watch = if app.focus == Focus::Watchlist {
+        app.active_topic()
+    } else {
+        None
+    };
     let hints = match app.focus {
         Focus::Tree => {
             "j/k move  h fold  spc pin  / find  e edit  tab watchlist  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
@@ -1866,8 +1871,18 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Focus::Watchlist if app.watchlist.is_empty() => {
             "tab tree  1-9/p presets  u restore  / find  : commands  c connect  q quit"
         }
+        Focus::Watchlist if active_watch.as_deref().is_some_and(|t| app.is_field_card(t)) => {
+            "h/j/k/l move  x remove  e edit  spc unpin  f field  v card  o overlay  tab tree  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
+        }
+        Focus::Watchlist
+            if active_watch
+                .as_deref()
+                .is_some_and(|t| app.can_toggle_field_card(t)) =>
+        {
+            "h/j/k/l move  x remove  e edit  spc unpin  v field  tab tree  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
+        }
         Focus::Watchlist => {
-            "h/j/k/l move  x remove  e edit  spc unpin  f field  o overlay  tab tree  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
+            "h/j/k/l move  x remove  e edit  spc unpin  tab tree  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
         }
         Focus::Presets => {
             "j/k move  spc save  enter load  r rename  x clear  1-9 load  esc back"

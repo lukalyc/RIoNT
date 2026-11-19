@@ -1114,6 +1114,18 @@ impl App {
                 }
                 return UiAction::None;
             }
+            KeyCode::Char('v') => {
+                // Toggle pose card between the braille field map and a
+                // compact numeric card.
+                if let Some(topic) = cells.get(c).cloned() {
+                    if self.can_toggle_field_card(&topic) {
+                        self.toggle_pose_view_on(&topic);
+                    } else {
+                        self.toast(ToastKind::Info, "not a pose topic");
+                    }
+                }
+                return UiAction::None;
+            }
             _ => {}
         }
         self.watchlist_cursor = c;
@@ -1130,13 +1142,24 @@ impl App {
     }
 
     /// Enlarged field view: `f` closes (same key that opened it); Esc is
-    /// the standard overlay escape. Everything else is ignored — the
-    /// popup is a passive readout.
+    /// the standard overlay escape; `v` collapses back to a compact numeric
+    /// card. Everything else is ignored — the popup is a passive readout.
     fn handle_field_view(&mut self, key: KeyEvent) -> UiAction {
-        if matches!(key.code, KeyCode::Char('f') | KeyCode::Esc) {
-            self.mode = Mode::Normal;
-            self.field_view = None;
-            self.focus = Focus::Watchlist;
+        match key.code {
+            KeyCode::Char('f') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.field_view = None;
+                self.focus = Focus::Watchlist;
+            }
+            KeyCode::Char('v') => {
+                let topic = self.field_view.take();
+                self.mode = Mode::Normal;
+                self.focus = Focus::Watchlist;
+                if let Some(t) = topic {
+                    self.toggle_pose_view_on(&t);
+                }
+            }
+            _ => {}
         }
         UiAction::None
     }
@@ -1152,10 +1175,20 @@ impl App {
     /// topic has EVER classified as a pose (pose sources legitimately
     /// publish empty/no-estimate values between fixes — without stickiness
     /// the card would flicker on every cycle), or the user explicitly
-    /// opted it in via `Field: Toggle Pose View on Active Card`.
-    /// Lookalike topics (target poses, arbitrary double[6]) that never
-    /// classified stay normal value cards.
+    /// opted it in via `v` / `Field: Toggle Pose View on Active Card` —
+    /// unless explicitly collapsed to a compact numeric card via
+    /// `field.disable_pose_topics`. Lookalike topics (target poses,
+    /// arbitrary double[6]) that never classified stay normal value cards.
     pub fn is_field_card(&self, topic: &str) -> bool {
+        if self
+            .config
+            .field
+            .disable_pose_topics
+            .iter()
+            .any(|t| t == topic)
+        {
+            return false;
+        }
         self.store
             .topics
             .get(topic)
@@ -1167,6 +1200,73 @@ impl App {
                 .force_pose_topics
                 .iter()
                 .any(|t| t == topic)
+    }
+
+    /// Can this topic be toggled between a braille field card and a compact
+    /// numeric card via `v`?
+    pub fn can_toggle_field_card(&self, topic: &str) -> bool {
+        if self.is_field_card(topic)
+            || self
+                .config
+                .field
+                .disable_pose_topics
+                .iter()
+                .any(|t| t == topic)
+        {
+            return true;
+        }
+        self.store.topics.get(topic).is_some_and(|td| {
+            td.is_pose_source()
+                || td
+                    .current
+                    .as_ref()
+                    .and_then(crate::field::forced_reading)
+                    .is_some()
+        })
+    }
+
+    /// Collapse a field card (and any overlay-group members drawn with it)
+    /// into compact numeric card(s), or re-enable field rendering on a
+    /// collapsed/lookalike pose topic.
+    fn toggle_pose_view_on(&mut self, topic: &str) {
+        if self.is_field_card(topic) {
+            let mut members = self.field_members(topic);
+            if members.is_empty() {
+                members.push(topic.to_string());
+            }
+            for t in &members {
+                self.config.field.force_pose_topics.retain(|x| x != t);
+                let auto = self
+                    .store
+                    .topics
+                    .get(t)
+                    .is_some_and(|td| td.is_pose_source());
+                if auto && !self.config.field.disable_pose_topics.iter().any(|x| x == t) {
+                    self.config.field.disable_pose_topics.push(t.clone());
+                }
+            }
+        } else {
+            self.config.field.disable_pose_topics.retain(|x| x != topic);
+            let auto = self
+                .store
+                .topics
+                .get(topic)
+                .is_some_and(|td| td.is_pose_source());
+            if !auto
+                && !self
+                    .config
+                    .field
+                    .force_pose_topics
+                    .iter()
+                    .any(|x| x == topic)
+            {
+                self.config.field.force_pose_topics.push(topic.to_string());
+            }
+        }
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Error, format!("save config: {}", e));
+        }
+        self.clamp_watchlist_cursor();
     }
 
     /// The topic's current pose reading, if the current value classifies.
@@ -1523,26 +1623,10 @@ impl App {
                 UiAction::None
             }
             Command::FieldTogglePoseView => {
-                // Opt-in override for ambiguous topics: the auto-classifier
-                // stays conservative; only this user action widens it.
+                // Opt-in/opt-out override for field card rendering on the active
+                // topic (collapses auto-detected pose cards or widens lookalikes).
                 match self.active_topic() {
-                    Some(topic) => {
-                        let forced = &mut self.config.field.force_pose_topics;
-                        let msg = match forced.iter().position(|t| t == &topic) {
-                            Some(pos) => {
-                                forced.remove(pos);
-                                format!("normal card: {}", topic)
-                            }
-                            None => {
-                                forced.push(topic.clone());
-                                format!("field card: {}", topic)
-                            }
-                        };
-                        if let Err(e) = self.config.save() {
-                            self.toast(ToastKind::Error, format!("save config: {}", e));
-                        }
-                        self.toast(ToastKind::Success, msg);
-                    }
+                    Some(topic) => self.toggle_pose_view_on(&topic),
                     None => self.toast(ToastKind::Warn, "no topic under cursor"),
                 }
                 UiAction::None
