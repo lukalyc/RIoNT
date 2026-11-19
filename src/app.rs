@@ -17,12 +17,14 @@ pub enum Mode {
     /// Zero management options (SRP: management lives in Settings).
     Connect,
     Palette,
-    /// Generic single-input prompt (Add Robot Target / Save Preset).
+    /// Generic single-input prompt (Add Robot Target / Save / Rename Preset).
     Prompt,
     /// List picker: remove a saved robot target.
     PickTarget,
     /// List picker: load a workspace preset.
     PickPreset,
+    /// Confirmation dialog before clearing a preset slot.
+    ConfirmClearPreset,
     /// Read-only configuration summary.
     SettingsView,
     /// Enlarged field view: near-fullscreen field popup for the hovered
@@ -31,12 +33,12 @@ pub enum Mode {
     FieldView,
 }
 
-/// Keyboard focus. The inspector dock is strictly passive, so focus only
-/// ever alternates between the topic tree and the watchlist canvas.
+/// Keyboard focus: topic tree, watchlist canvas, or top-right HUD preset bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Tree,
     Watchlist,
+    Presets,
 }
 
 /// One entry of the watchlist. `Glob` adopts every topic under a prefix
@@ -120,11 +122,12 @@ pub const COMMANDS: [(Command, &str); 16] = [
     (Command::CopyTopicPath, "Copy Active Topic Path"),
 ];
 
-/// The focused single-input prompts opened from the palette.
+/// The focused single-input prompts opened from the palette or preset bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     AddTarget,
-    SavePreset,
+    SavePreset { slot: usize },
+    RenamePreset { slot: usize },
 }
 
 /// Outcome of a key press: what the caller (main loop) must do about it.
@@ -168,12 +171,22 @@ pub struct App {
     pub expanded: HashSet<String>,
     pub tree_cursor: usize,
     pub focus: Focus,
+    /// Pane focused before entering `Focus::Presets` (restored on Esc/Tab/`p`).
+    pub prev_focus: Focus,
+    /// Highlighted slot `0..9` when `focus == Focus::Presets`.
+    pub preset_cursor: usize,
+    /// Currently loaded preset slot `0..9`, if any.
+    pub active_preset: Option<usize>,
+    /// True once the watchlist has diverged from `active_preset`.
+    pub preset_dirty: bool,
 
     // watchlist
     pub watchlist: Vec<MatrixSource>,
     /// Watchlist stashed by the last destructive transition (preset load /
     /// Clear All): one-level undo for `u` and `Watchlist: Restore Previous`.
     pub last_watchlist: Option<Vec<MatrixSource>>,
+    /// Active preset stashed alongside `last_watchlist` for `u` restore.
+    pub last_active_preset: Option<usize>,
     pub watchlist_cursor: usize,
     /// Scroll offset (card rows) adjusted by the renderer to keep the cursor
     /// visible; clamped defensively here too.
@@ -203,11 +216,17 @@ pub struct App {
     pub prompt_kind: PromptKind,
     pub prompt_input: String,
     pub prompt_error: Option<String>,
+    /// Slot pending confirmation in `Mode::ConfirmClearPreset`.
+    pub clear_preset_slot: Option<usize>,
     /// Shared cursor for the list pickers (PickTarget / PickPreset).
     pub picker_cursor: usize,
     pub palette_query: String,
     pub palette_matches: Vec<usize>, // indices into COMMANDS
     pub palette_cursor: usize,
+
+    /// Last rendered HUD dimensions (used to size preset name limits dynamically).
+    pub hud_width: u16,
+    pub hud_left_width: u16,
 
     // toasts
     pub toasts: Vec<Toast>,
@@ -256,8 +275,13 @@ impl App {
             expanded: HashSet::new(),
             tree_cursor: 0,
             focus: Focus::Tree,
+            prev_focus: Focus::Tree,
+            preset_cursor: 0,
+            active_preset: None,
+            preset_dirty: false,
             watchlist: Vec::new(),
             last_watchlist: None,
+            last_active_preset: None,
             watchlist_cursor: 0,
             watchlist_scroll: 0,
             watchlist_vscroll: 0,
@@ -273,10 +297,13 @@ impl App {
             prompt_kind: PromptKind::AddTarget,
             prompt_input: String::new(),
             prompt_error: None,
+            clear_preset_slot: None,
             picker_cursor: 0,
             palette_query: String::new(),
             palette_matches: Vec::new(),
             palette_cursor: 0,
+            hud_width: 120,
+            hud_left_width: 72,
             toasts: Vec::new(),
             show_pose_trail: true,
             fms_red: None,
@@ -304,6 +331,17 @@ impl App {
                 None => MatrixSource::Topic(t.clone()),
             })
             .collect();
+        if !app.config.last_view.is_empty() {
+            let slots = app.preset_slots();
+            for (idx, ps) in slots.iter().enumerate() {
+                if let Some(ps) = ps {
+                    if ps.topics == app.config.last_view {
+                        app.active_preset = Some(idx);
+                        break;
+                    }
+                }
+            }
+        }
         app
     }
 
@@ -349,17 +387,26 @@ impl App {
         match actual {
             Some(v) if written.approx_eq(v) => {
                 // Authoritative confirmation: reflect the read-back in the
-                // store too. The live-edit path already applied a local
-                // echo, but the offline-queued path did not (there the
-                // write had not landed yet) — this closes that gap.
-                let server_ts = self
+                // store when it is not already present (the live-edit path
+                // already applied a local echo; applying again would
+                // double-count the edit in Hz and reset Δ, whereas the
+                // offline-queued path had no local echo yet).
+                let already_current = self
                     .store
                     .topics
                     .get(topic)
-                    .and_then(|t| t.last_server_ts)
-                    .unwrap_or(0);
-                self.store
-                    .apply_value(topic, v.clone(), server_ts, std::time::Instant::now());
+                    .and_then(|t| t.current.as_ref())
+                    .is_some_and(|cur| cur.approx_eq(v));
+                if !already_current {
+                    let server_ts = self
+                        .store
+                        .topics
+                        .get(topic)
+                        .and_then(|t| t.last_server_ts)
+                        .unwrap_or(0);
+                    self.store
+                        .apply_value(topic, v.clone(), server_ts, std::time::Instant::now());
+                }
             }
             Some(v) => {
                 // The read-back is authoritative: the robot holds a value
@@ -403,7 +450,7 @@ impl App {
         // restart drops the link, so a fresh session is a fresh counter.
         self.connected_since = Some(std::time::Instant::now());
         self.runtime_at_disconnect = None;
-        self.toast(ToastKind::Success, format!("connected to {}", self.target));
+        // self.toast(ToastKind::Success, format!("connected to {}", self.target));
     }
 
     /// The link is down: a session died, or the client is already trying
@@ -550,18 +597,38 @@ impl App {
         self.persist_watchlist();
     }
 
-    /// Snapshot the watchlist into `config.last_view` (glob `prefix/*` form)
-    /// and save. Called after every mutation so a quit/crash mid-session
-    /// never loses the operator's view.
-    fn persist_watchlist(&mut self) {
-        self.config.last_view = self
-            .watchlist
+    /// Current watchlist entries serialized in config/preset format.
+    pub fn current_watchlist_strings(&self) -> Vec<String> {
+        self.watchlist
             .iter()
             .map(|s| match s {
                 MatrixSource::Topic(t) => t.clone(),
                 MatrixSource::Glob(p) => format!("{}/*", p),
             })
-            .collect();
+            .collect()
+    }
+
+    fn sync_preset_dirty(&mut self) {
+        if self.watchlist.is_empty() {
+            self.active_preset = None;
+            self.preset_dirty = false;
+            return;
+        }
+        if let Some(idx) = self.active_preset {
+            let current = self.current_watchlist_strings();
+            let saved = self.preset_slots()[idx].as_ref().map(|s| s.topics.clone());
+            self.preset_dirty = saved.as_ref() != Some(&current);
+        } else {
+            self.preset_dirty = false;
+        }
+    }
+
+    /// Snapshot the watchlist into `config.last_view` (glob `prefix/*` form)
+    /// and save. Called after every mutation so a quit/crash mid-session
+    /// never loses the operator's view.
+    fn persist_watchlist(&mut self) {
+        self.config.last_view = self.current_watchlist_strings();
+        self.sync_preset_dirty();
         if let Err(e) = self.config.save() {
             self.toast(ToastKind::Warn, format!("save config: {}", e));
         }
@@ -573,6 +640,7 @@ impl App {
         match self.last_watchlist.take() {
             Some(prev) => {
                 self.watchlist = prev;
+                self.active_preset = self.last_active_preset.take();
                 self.watchlist_cursor = 0;
                 self.watchlist_scroll = 0;
                 self.watchlist_vscroll = 0;
@@ -684,9 +752,10 @@ impl App {
     /// The topic the current focus points at (tree cursor or watchlist card).
     pub fn active_topic(&self) -> Option<String> {
         match self.focus {
-            Focus::Tree => self
-                .cursor_path()
-                .and_then(|(p, is_topic)| if is_topic { Some(p) } else { None }),
+            Focus::Tree | Focus::Presets => {
+                self.cursor_path()
+                    .and_then(|(p, is_topic)| if is_topic { Some(p) } else { None })
+            }
             Focus::Watchlist => self.watchlist_cells().get(self.watchlist_cursor).cloned(),
         }
     }
@@ -702,7 +771,12 @@ impl App {
             // mid-edit must not quit and lose unpinned work); outside them
             // it quits.
             return match self.mode {
-                Mode::Search | Mode::Edit | Mode::Connect | Mode::Palette | Mode::Prompt => {
+                Mode::Search
+                | Mode::Edit
+                | Mode::Connect
+                | Mode::Palette
+                | Mode::Prompt
+                | Mode::ConfirmClearPreset => {
                     self.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
                 }
                 // FieldView is a passive readout: Ctrl-C closes it like
@@ -725,6 +799,7 @@ impl App {
             Mode::Prompt => self.handle_prompt(key),
             Mode::PickTarget => self.handle_pick_target(key),
             Mode::PickPreset => self.handle_pick_preset(key),
+            Mode::ConfirmClearPreset => self.handle_confirm_clear_preset(key),
             Mode::SettingsView => self.handle_settings_view(key),
             Mode::FieldView => self.handle_field_view(key),
         }
@@ -740,6 +815,18 @@ impl App {
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_palette();
+                return UiAction::None;
+            }
+            KeyCode::Char('p') => {
+                if self.focus == Focus::Presets {
+                    self.focus = self.prev_focus;
+                } else {
+                    self.prev_focus = self.focus;
+                    self.focus = Focus::Presets;
+                    if let Some(a) = self.active_preset {
+                        self.preset_cursor = a.min(8);
+                    }
+                }
                 return UiAction::None;
             }
             KeyCode::Char('/') => {
@@ -759,7 +846,7 @@ impl App {
                 return UiAction::None;
             }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-                // Workspace presets: 1-9 load entries of .nt-views.json.
+                // Workspace presets: 1-9 load numbered preset slots.
                 self.apply_preset(c.to_digit(10).unwrap() as usize - 1);
                 return UiAction::None;
             }
@@ -775,7 +862,54 @@ impl App {
         match self.focus {
             Focus::Tree => self.handle_tree_key(key),
             Focus::Watchlist => self.handle_watchlist_key(key),
+            Focus::Presets => self.handle_presets_key(key),
         }
+    }
+
+    fn handle_presets_key(&mut self, key: KeyEvent) -> UiAction {
+        match key.code {
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                self.focus = self.prev_focus;
+            }
+            KeyCode::Char('k') | KeyCode::Right | KeyCode::Char('l') => {
+                self.preset_cursor = (self.preset_cursor + 1).min(8);
+            }
+            KeyCode::Char('j') | KeyCode::Left | KeyCode::Char('h') => {
+                self.preset_cursor = self.preset_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('g') => {
+                self.preset_cursor = 0;
+            }
+            KeyCode::Char('G') => {
+                self.preset_cursor = 8;
+            }
+            KeyCode::Char(' ') => {
+                self.open_save_preset(self.preset_cursor);
+            }
+            KeyCode::Enter => {
+                if self.preset_slots()[self.preset_cursor].is_some() {
+                    self.apply_preset(self.preset_cursor);
+                } else {
+                    self.open_save_preset(self.preset_cursor);
+                }
+            }
+            KeyCode::Char('r') => {
+                self.open_rename_preset(self.preset_cursor);
+            }
+            KeyCode::Char('x') | KeyCode::Delete => {
+                if self.preset_slots()[self.preset_cursor].is_some() {
+                    self.clear_preset_slot = Some(self.preset_cursor);
+                    self.mode = Mode::ConfirmClearPreset;
+                } else {
+                    self.toast(
+                        ToastKind::Info,
+                        format!("preset slot {} is empty", self.preset_cursor + 1),
+                    );
+                }
+            }
+            _ => {}
+        }
+        UiAction::None
     }
 
     fn open_palette(&mut self) {
@@ -1067,42 +1201,141 @@ impl App {
         }
     }
 
-    /// Active presets: config.json first, legacy .nt-views.json fallback.
-    fn preset_list(&self) -> Vec<(String, Vec<String>)> {
-        let cfg = self.config.preset_list();
-        if cfg.is_empty() {
-            legacy_presets()
+    /// Resolved numbered preset slots `1..=9` (config.json first, legacy
+    /// `.nt-views.json` fallback when config has no presets).
+    pub fn preset_slots(&self) -> [Option<crate::config::PresetSlot>; 9] {
+        if self.config.preset_slots.is_empty() && self.config.presets.is_empty() {
+            let mut slots: [Option<crate::config::PresetSlot>; 9] = Default::default();
+            for (i, (name, topics)) in legacy_presets().into_iter().take(9).enumerate() {
+                slots[i] = Some(crate::config::PresetSlot { name, topics });
+            }
+            slots
         } else {
-            cfg
+            self.config.resolved_slots()
         }
+    }
+
+    /// Occupied preset slots in `1..=9` order as `(zero_based_idx, PresetSlot)`.
+    pub fn occupied_preset_slots(&self) -> Vec<(usize, crate::config::PresetSlot)> {
+        self.preset_slots()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.map(|ps| (idx, ps)))
+            .collect()
+    }
+
+    /// Maximum preset name character count that fits alongside `[1]..[9]` in
+    /// the current terminal HUD width.
+    pub fn preset_name_max_len(&self) -> usize {
+        // Reserve: left HUD + 2-space gap + 35-col base strip (`[1]..[9]`) + 2 (`:` and `*`).
+        let used = self.hud_left_width as usize + 2 + 35 + 2;
+        (self.hud_width as usize).saturating_sub(used).clamp(6, 24)
+    }
+
+    fn open_save_preset(&mut self, slot: usize) {
+        if self.watchlist.is_empty() {
+            self.toast(ToastKind::Warn, "watchlist is empty — nothing to save");
+            return;
+        }
+        let existing_name = self.preset_slots()[slot]
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        self.mode = Mode::Prompt;
+        self.prompt_kind = PromptKind::SavePreset { slot };
+        self.prompt_input = existing_name;
+        self.prompt_error = None;
+    }
+
+    fn open_rename_preset(&mut self, slot: usize) {
+        if let Some(ps) = &self.preset_slots()[slot] {
+            self.mode = Mode::Prompt;
+            self.prompt_kind = PromptKind::RenamePreset { slot };
+            self.prompt_input = ps.name.clone();
+            self.prompt_error = None;
+        } else {
+            self.toast(
+                ToastKind::Warn,
+                format!("preset slot {} is empty", slot + 1),
+            );
+        }
+    }
+
+    fn save_preset_slot(&mut self, slot: usize, name: String) {
+        self.config.migrate_legacy_presets_to_slots();
+        let topics = self.current_watchlist_strings();
+        self.config.preset_slots.insert(
+            (slot + 1) as u8,
+            crate::config::PresetSlot {
+                name: name.clone(),
+                topics,
+            },
+        );
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Error, format!("save config: {}", e));
+        }
+        self.active_preset = Some(slot);
+        self.preset_dirty = false;
+        let msg = if name.is_empty() {
+            format!("Preset {} saved", slot + 1)
+        } else {
+            format!("Preset {} ('{}') saved", slot + 1, name)
+        };
+        self.toast(ToastKind::Success, msg);
+    }
+
+    fn rename_preset_slot(&mut self, slot: usize, name: String) {
+        self.config.migrate_legacy_presets_to_slots();
+        if let Some(ps) = self.config.preset_slots.get_mut(&((slot + 1) as u8)) {
+            ps.name = name.clone();
+        }
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Error, format!("save config: {}", e));
+        }
+        let msg = if name.is_empty() {
+            format!("Preset {} name cleared", slot + 1)
+        } else {
+            format!("Preset {} renamed to '{}'", slot + 1, name)
+        };
+        self.toast(ToastKind::Success, msg);
+    }
+
+    fn clear_preset_slot_at(&mut self, slot: usize) {
+        self.config.migrate_legacy_presets_to_slots();
+        self.config.preset_slots.remove(&((slot + 1) as u8));
+        if let Err(e) = self.config.save() {
+            self.toast(ToastKind::Error, format!("save config: {}", e));
+        }
+        if self.active_preset == Some(slot) {
+            self.active_preset = None;
+            self.preset_dirty = false;
+        }
+        self.toast(ToastKind::Info, format!("Cleared preset slot {}", slot + 1));
     }
 
     /// Load preset `idx` (0-based) into the watchlist and focus it.
     fn apply_preset(&mut self, idx: usize) {
-        let presets = self.preset_list();
-        match presets.get(idx) {
-            Some((name, topics)) => {
-                self.load_preset_topics(name, topics);
+        match self.preset_slots().get(idx).and_then(|o| o.clone()) {
+            Some(ps) => {
+                self.load_preset_slot(idx, &ps);
             }
             None => {
                 self.toast(
                     ToastKind::Warn,
-                    format!(
-                        "no preset {} ({} loaded from config)",
-                        idx + 1,
-                        presets.len()
-                    ),
+                    format!("preset slot {} is empty — press p to save", idx + 1),
                 );
             }
         }
     }
 
-    fn load_preset_topics(&mut self, name: &str, topics: &[String]) {
+    fn load_preset_slot(&mut self, idx: usize, ps: &crate::config::PresetSlot) {
         // Stash the replaced view so `u` / Restore Previous can bring it
         // back — a stray preset digit must never be a one-way door.
         self.last_watchlist = Some(self.watchlist.clone());
+        self.last_active_preset = self.active_preset;
         let replaced = self.watchlist_cells().len();
-        self.watchlist = topics
+        self.watchlist = ps
+            .topics
             .iter()
             .map(|t| {
                 if let Some(prefix) = t.strip_suffix("/*") {
@@ -1116,19 +1349,26 @@ impl App {
         self.watchlist_scroll = 0;
         self.watchlist_vscroll = 0;
         self.focus = Focus::Watchlist;
+        self.active_preset = Some(idx);
+        self.preset_dirty = false;
+        let label = if ps.name.is_empty() {
+            format!("#{}", idx + 1)
+        } else {
+            format!("{}:{}", idx + 1, ps.name)
+        };
         let n = self.watchlist_cells().len();
         if replaced > 0 {
             self.toast(
                 ToastKind::Success,
                 format!(
                     "preset {}: {} card(s) (replaced {} — restore available)",
-                    name, n, replaced
+                    label, n, replaced
                 ),
             );
         } else {
             self.toast(
                 ToastKind::Success,
-                format!("preset {}: {} card(s)", name, n),
+                format!("preset {}: {} card(s)", label, n),
             );
         }
         self.persist_watchlist();
@@ -1246,6 +1486,7 @@ impl App {
                 // Destructive but recoverable: stash for `u` / Restore Previous
                 // instead of a y/n prompt (faster in the pit).
                 self.last_watchlist = Some(self.watchlist.clone());
+                self.last_active_preset = self.active_preset;
                 let n = self.watchlist.len();
                 self.watchlist.clear();
                 self.watchlist_cursor = 0;
@@ -1375,21 +1616,19 @@ impl App {
                 UiAction::None
             }
             Command::WatchlistSavePreset => {
-                if self.watchlist.is_empty() {
-                    self.toast(ToastKind::Warn, "watchlist is empty — nothing to save");
-                } else {
-                    self.mode = Mode::Prompt;
-                    self.prompt_kind = PromptKind::SavePreset;
-                    self.prompt_input.clear();
-                    self.prompt_error = None;
-                }
+                let target_slot = self
+                    .preset_slots()
+                    .iter()
+                    .position(|s| s.is_none())
+                    .unwrap_or_else(|| self.active_preset.unwrap_or(0));
+                self.open_save_preset(target_slot);
                 UiAction::None
             }
             Command::WatchlistLoadPreset => {
-                if self.preset_list().is_empty() {
+                if self.occupied_preset_slots().is_empty() {
                     self.toast(
                         ToastKind::Warn,
-                        "no presets configured (save one with 'Watchlist: Save Active as Preset')",
+                        "no presets configured (press p to save one to slots 1-9)",
                     );
                 } else {
                     self.mode = Mode::PickPreset;
@@ -1580,6 +1819,7 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.prompt_input.pop();
+                self.prompt_error = None;
             }
             KeyCode::Enter => {
                 let input = self.prompt_input.trim().to_string();
@@ -1624,25 +1864,28 @@ impl App {
                         self.prompt_input.clear();
                         self.prompt_error = None;
                     }
-                    PromptKind::SavePreset => {
+                    PromptKind::SavePreset { slot } => {
                         let name = input;
-                        if name.is_empty() {
-                            self.prompt_error = Some("empty".into());
+                        let max_len = self.preset_name_max_len();
+                        let len = name.chars().count();
+                        if len > max_len {
+                            self.prompt_error = Some(format!("too long ({}/{})", len, max_len));
                             return UiAction::None;
                         }
-                        let topics: Vec<String> = self
-                            .watchlist
-                            .iter()
-                            .map(|s| match s {
-                                MatrixSource::Topic(t) => t.clone(),
-                                MatrixSource::Glob(p) => format!("{}/*", p),
-                            })
-                            .collect();
-                        self.config.presets.insert(name.clone(), topics);
-                        if let Err(e) = self.config.save() {
-                            self.toast(ToastKind::Error, format!("save config: {}", e));
+                        self.save_preset_slot(slot, name);
+                        self.mode = Mode::Normal;
+                        self.prompt_input.clear();
+                        self.prompt_error = None;
+                    }
+                    PromptKind::RenamePreset { slot } => {
+                        let name = input;
+                        let max_len = self.preset_name_max_len();
+                        let len = name.chars().count();
+                        if len > max_len {
+                            self.prompt_error = Some(format!("too long ({}/{})", len, max_len));
+                            return UiAction::None;
                         }
-                        self.toast(ToastKind::Success, format!("Preset '{}' saved", name));
+                        self.rename_preset_slot(slot, name);
                         self.mode = Mode::Normal;
                         self.prompt_input.clear();
                         self.prompt_error = None;
@@ -1652,6 +1895,23 @@ impl App {
             KeyCode::Char(c) => {
                 self.prompt_input.push(c);
                 self.prompt_error = None;
+            }
+            _ => {}
+        }
+        UiAction::None
+    }
+
+    fn handle_confirm_clear_preset(&mut self, key: KeyEvent) -> UiAction {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                if let Some(slot) = self.clear_preset_slot.take() {
+                    self.clear_preset_slot_at(slot);
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.clear_preset_slot = None;
+                self.mode = Mode::Normal;
             }
             _ => {}
         }
@@ -1684,7 +1944,7 @@ impl App {
     }
 
     fn handle_pick_preset(&mut self, key: KeyEvent) -> UiAction {
-        let presets = self.preset_list();
+        let presets = self.occupied_preset_slots();
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1695,15 +1955,13 @@ impl App {
             }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = c.to_digit(10).unwrap() as usize - 1;
-                if let Some((name, topics)) = presets.get(idx) {
-                    self.mode = Mode::Normal;
-                    self.load_preset_topics(name, topics);
-                }
+                self.mode = Mode::Normal;
+                self.apply_preset(idx);
             }
             KeyCode::Enter => {
-                if let Some((name, topics)) = presets.get(self.picker_cursor).cloned() {
+                if let Some((idx, ps)) = presets.get(self.picker_cursor).cloned() {
                     self.mode = Mode::Normal;
-                    self.load_preset_topics(&name, &topics);
+                    self.load_preset_slot(idx, &ps);
                 }
             }
             _ => {}

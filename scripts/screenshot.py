@@ -127,7 +127,7 @@ def main():
                 {"name": "Simulation", "ip": "127.0.0.1:5810"},
                 {"name": "USB Tether", "ip": "172.22.11.2"},
             ],
-            "presets": {},
+            "preset_slots": {},
             "system": {"ssh_user": "admin",
                        "restart_cmd": "/usr/local/frc/bin/frcRunRobot.sh restart"},
             "field": {"alliance": "blue", "length_m": 16.54, "width_m": 8.21},
@@ -168,7 +168,7 @@ def main():
 
     try:
         # boot + let values stream (Hz samples, trail points)
-        wait(lambda: "ONLINE" in screen.display[0])
+        wait(lambda: "[CONNECTED (" in screen.display[0])
         time.sleep(4.0)
         render_png(screen, os.path.join(OUT, "screenshot-main.png"))
 

@@ -48,7 +48,7 @@ send("c"); time.sleep(0.3); send("127.0.0.1:5814"); time.sleep(0.3); send("\r")
 for i in range(12):
     time.sleep(1)
     print(f"back+{i+1}s:", screen.display[0].strip())
-    if "ONLINE" in screen.display[0]:
+    if "[CONNECTED (" in screen.display[0]:
         break
 print("--- toasts/hints ---")
 print(screen.display[34].rstrip())

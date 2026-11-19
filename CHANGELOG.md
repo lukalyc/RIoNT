@@ -8,17 +8,34 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Added
+
+- **Top-right HUD preset bar (`[1]`–`[9]`).** Numbered preset slots now
+  live directly in the top-right HUD, hiding inactive slot names to stay
+  compact while expanding `[N:name]` when loaded or hovered (`*` marks a
+  modified watchlist). Press `p` to focus the preset bar (`j`/`k` move,
+  `Space` saves or overwrites on a single screen with an optional name and
+  dynamic screen-width length indicator, `Enter` loads, `r` renames, `x`
+  clears, `Esc`/`p`/`Tab` returns).
+- **Bottom hint bar now advertises `u restore`** (plus `1-9/p presets`)
+  alongside focused preset-bar controls when `p` is active.
+
 ### Changed
 
-- **HUD link state: no `COMM` label, animated `DISCONNECTED`.** The
-  header now reads `ONLINE (address)` or a red `DISCONNECTED` whose dots
-  march 0→3 and repeat while RIONT retries — every offline frame is an
-  attempt in flight, so the header never sits frozen on an unreachable
-  robot. The `(attempt N — cause)` detail is gone: the attempt count and
-  the failure cause were noise at HUD scale, leaving the address RIONT is
-  hammering as the only detail.
+- **HUD title is wrapped in dimmed brackets (`[RIONT vX.Y.Z]`)** aligned at
+  column 0 with the topic tree's left border, matching the bracketed status
+  and runtime pills to its right.
+- **HUD link state: `CONNECTED`, no `COMM` label, animated `DISCONNECTED`.**
+  The connected status pill now reads `CONNECTED (address)` (replacing
+  `ONLINE`), and offline links show a red `DISCONNECTED` whose dots march
+  0→3 and repeat while RIONT retries — every offline frame is an attempt in
+  flight, so the header never sits frozen on an unreachable robot. The
+  `(attempt N — cause)` detail is gone: the attempt count and the failure
+  cause were noise at HUD scale, leaving the address RIONT is hammering as
+  the only detail.
+- **Inspector dock title shortened from `INSPECTOR` to `INSPECT`.**
 - **Release asset names drop the rustc `unknown` vendor field:**
-  `riont-0.8.1-x86_64-linux-gnu.tar.gz` instead of
+  `riont-<version>-x86_64-linux-gnu.tar.gz` instead of
   `x86_64-unknown-linux-gnu`. Windows (`pc-windows-msvc`) and macOS
   (`apple-darwin`) names are unchanged.
 - **`riont-nt4`'s `NtUpdate` no longer carries display payloads** (see
@@ -30,7 +47,7 @@ it by `scripts/release.sh` when the batch is ready to ship.
 - **The HUD's robot-code indicator (`CODE: RUNNING/STOPPED`).** The link
   state and RUNTIME are the HUD's job; the code-alive heuristic needed two
   freshness windows (value frames + RTT echo) and a red alarm that never
-  changed an operator's action. The header is now `ONLINE`/`DISCONNECTED`
+  changed an operator's action. The header is now `CONNECTED`/`DISCONNECTED`
   plus `RUNTIME`. The dead plumbing went with it: `NtUpdate::Connecting`
   drops its `target`/`attempt` fields, `NtUpdate::Disconnected` drops its
   reason, and `NtUpdate::Rtt` is gone (the RTT still feeds the internal
@@ -44,6 +61,14 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ### Fixed
 
+- **Topic Hz rates are now continuous (0.1 Hz resolution) and drop to `0.0 Hz`
+  when updates stop.** Previously, rates counted samples in a fixed 2 s window
+  (`n / 2.0`) and only pruned on new updates — locking readouts to coarse
+  `0.5 Hz` steps and leaving static topics stuck at `0.5 Hz` (or active streams
+  frozen at their last rate) indefinitely. Rates now measure actual update
+  intervals (using NT4 server timestamps when consistent with arrival time),
+  track slow topics down to `0.1 Hz`, decay smoothly to `0.0 Hz` when updates
+  stop, and no longer double-count live-edit read-back confirmations.
 - **RUNTIME no longer creeps forward while a link is down.** Freezing the
   counter at the value the session reached is now idempotent. Repeated
   offline reports (a retry loop, or a second failure reason after a live

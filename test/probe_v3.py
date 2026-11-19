@@ -42,7 +42,7 @@ with open(CFG, "w") as fh:
             {"name": "Simulation", "ip": "127.0.0.1:5814"},
             {"name": "USB Tether", "ip": "127.0.0.1:5815"},
         ],
-        "presets": {},
+        "preset_slots": {},
     }, fh)
 
 
@@ -116,11 +116,11 @@ def run_once(i):
             time.sleep(0.05)
         return False
 
-    if not wait("ONLINE"):
+    if not wait("[CONNECTED ("):
         rc = p.poll()
         p.kill()
         sim.kill()
-        return f"NEVER-ONLINE rc={rc}"
+        return f"NEVER-CONNECTED rc={rc}"
 
     # Pin two cards like an operator mid-session would (pose card too).
     for query, marker in (("shooter", "Shooter RPM"), ("botpose", "botpose")):
@@ -171,7 +171,7 @@ def run_once(i):
             rio.kill()
             ds.kill()
             return f"CRASHED rc={rc}"
-        if "ONLINE" in text()[:200]:
+        if "[CONNECTED (" in text()[:200]:
             online = True
             break
         time.sleep(0.05)
@@ -187,7 +187,7 @@ def run_once(i):
     p.kill()
     rio.kill()
     ds.kill()
-    return ("OK" if online else "NO-REONLINE") + (f" pinned={pinned}" if not pinned else "")
+    return ("OK" if online else "NO-RECONNECT") + (f" pinned={pinned}" if not pinned else "")
 
 
 crashes = 0

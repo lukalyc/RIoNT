@@ -261,16 +261,21 @@ class Tui:
 # scenario grounding helpers (each scenario starts from a known state)
 # ---------------------------------------------------------------------------
 
+def is_connected_hud(header):
+    # Whole-word check: "CONNECTED" is a substring of "DISCONNECTED".
+    return bool(re.search(r"\bCONNECTED\b", header))
+
+
 def wait_online(tui, timeout=15.0):
-    return wait_until(lambda: "ONLINE" in tui.header(), timeout=timeout,
-                      desc="ONLINE")
+    return wait_until(lambda: is_connected_hud(tui.header()), timeout=timeout,
+                      desc="CONNECTED")
 
 
 def hud_topic_count(tui):
     """Topics the HUD reports (0 while the count still reads `0 topics`).
 
     Topic announcements arrive asynchronously AFTER the connect handshake,
-    so a fresh Tui reaches ONLINE before any topic exists. Content checks
+    so a fresh Tui reaches CONNECTED before any topic exists. Content checks
     must poll this, never read the header once.
     """
     m = re.search(r"(\d+) topics", tui.header())
@@ -378,7 +383,7 @@ def scenario_boot(server, harness, tui):
             {"name": "Test", "topics": ["SmartDashboard/Shooter RPM", "Swerve/*"]},
             {"name": "Dense", "topics": ["Swerve/*", "SmartDashboard/*"]},
         ]))
-    check("boot TUI reaches ONLINE", wait_online(tui), tui.header())
+    check("boot TUI reaches CONNECTED", wait_online(tui), tui.header())
     # Topic announcements stream right after connect: wait for the live
     # topic count before any value assertions downstream.
     check("robot topics stream", wait_until(
@@ -387,7 +392,8 @@ def scenario_boot(server, harness, tui):
 
 def scenario_hud(tui):
     h = tui.header()
-    check("HUD shows ONLINE + target ip", "ONLINE" in h and "127.0.0.1" in h, h)
+    check("HUD shows CONNECTED + target ip",
+          is_connected_hud(h) and "127.0.0.1" in h, h)
     check("HUD shows RUNTIME clock", "RUNTIME: " in h and ":" in h.split("RUNTIME: ")[1], h)
     check("HUD topic count > 10",
           wait_until(lambda: hud_topic_count(tui) > 10, timeout=10),
@@ -549,12 +555,12 @@ def scenario_reconnect(tui, server):
     # Sync on the state token, never the full label: the offline keyword is
     # DISCONNECTED with a marching-dots animation, so its exact text varies
     # frame to frame (harness rule: a wording change must not break this).
-    check("HUD leaves ONLINE when server dies", wait_until(
+    check("HUD leaves CONNECTED when server dies", wait_until(
         lambda: "DISCONNECT" in tui.header(), timeout=15), tui.header())
     # A drop is deliberately silent (no [ERROR] toast): RIONT retries on its
     # own, so the animated keyword is the whole signal.
     server.start()
-    check("HUD returns ONLINE after server restart", wait_online(tui), tui.header())
+    check("HUD returns CONNECTED after server restart", wait_online(tui), tui.header())
     check("values flow again after reconnect",
           wait_until(lambda: "Battery Voltage" in tui.text(), timeout=6),
           tui.text())
@@ -568,17 +574,18 @@ def scenario_reconnect(tui, server):
     tui.send(":")
     tui.send("recon")
     tui.send("\r")
-    check("palette reconnect returns ONLINE", wait_online(tui, timeout=8),
+    check("palette reconnect returns CONNECTED", wait_online(tui, timeout=8),
           tui.header())
 
 
 def scenario_retarget(tui):
-    # picker: type a dead target -> DISCONNECTED; then back -> ONLINE.
+    # picker: type a dead target -> DISCONNECTED; then back -> CONNECTED.
     tui.tap("c", lambda: "[CONNECT TARGET]" in tui.text(), desc="picker opens")
     tui.send("127.0.0.1:5999")
     tui.send("\r")
-    check("dead target leaves ONLINE", wait_until(
-        lambda: "ONLINE" not in tui.header(), timeout=15), tui.header())
+    check("dead target leaves CONNECTED", wait_until(
+        lambda: "DISCONNECT" in tui.header() and not is_connected_hud(tui.header()),
+        timeout=15), tui.header())
     tui.tap("c", lambda: "[CONNECT TARGET]" in tui.text(), desc="picker again")
     tui.send("127.0.0.1:5814")
     tui.send("\r")
@@ -612,8 +619,11 @@ def scenario_last_target_persist():
     prev_screen = CURRENT["screen"]
     CURRENT["screen"] = tui2.text
     try:
-        check("boot on dead target leaves ONLINE",
-              wait_until(lambda: "ONLINE" not in tui2.header(), timeout=8),
+        check("boot on dead target shows DISCONNECTED",
+              wait_until(
+                  lambda: "DISCONNECT" in tui2.header() and not is_connected_hud(tui2.header()),
+                  timeout=8,
+              ),
               tui2.header())
         tui2.tap("c", lambda: "[CONNECT TARGET]" in tui2.text(), desc="picker opens")
         tui2.send("127.0.0.1:5814")
@@ -684,8 +694,11 @@ def scenario_save_preset(tui):
         timeout=4), tui.text()[-300:])
     with open(CFG_PATH) as fh:
         cfg = json.load(fh)
-    check("preset persisted to config file", "bench" in cfg.get("presets", {}),
-          cfg.get("presets"))
+    saved_presets = cfg.get("presets", {})
+    saved_slots = cfg.get("preset_slots", {})
+    check("preset persisted to config file",
+          "bench" in saved_presets or any(s.get("name") == "bench" for s in saved_slots.values()),
+          {"presets": saved_presets, "preset_slots": saved_slots})
     clear_watchlist(tui)
 
 
@@ -791,7 +804,7 @@ def _scenario_viewport(label, cols, rows):
     """ROADMAP 10: cross-process contracts must hold at ANY viewport, not
     just 120x36. Second-instance pattern (like scenario_last_target_persist):
     spawn ANOTHER Tui at cols x rows against the SAME server and assert the
-    same contracts the main flow asserts — HUD reaches ONLINE, tree renders
+    same contracts the main flow asserts — HUD reaches CONNECTED, tree renders
     topics, a seeded folder-glob watchlist renders its group column + cards,
     values stream, process stays alive. Content assertions only: nothing
     depends on pixel positions, so the SHORT layout stays honest.
@@ -805,7 +818,7 @@ def _scenario_viewport(label, cols, rows):
     tui = Tui(cols=cols, rows=rows)
     CURRENT["screen"] = tui.text
     try:
-        check(f"{label} {cols}x{rows}: TUI reaches ONLINE",
+        check(f"{label} {cols}x{rows}: TUI reaches CONNECTED",
               wait_online(tui), tui.header())
         check(f"{label} {cols}x{rows}: topics stream",
               wait_until(lambda: hud_topic_count(tui) > 0, timeout=10),

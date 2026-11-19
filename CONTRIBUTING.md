@@ -23,15 +23,15 @@ RIONT is a Cargo workspace: the product binary plus reusable engine crates
 crates/riont-nt4/    Async NT4 client task: reconnect-forever sessions, clock sync,
                      publish retransmission. NtUpdate / ClientCommand channels.
                      Product-agnostic — no app logic, no SSH.
-crates/riont-store/  Topic store: values, metadata, Hz windowing, pose trails;
-                     conservative pose classification + struct:Pose2d decoding.
+crates/riont-store/  Topic store: values, metadata, interval Hz estimation, pose trails;
+                     conservative pose classification + WPILib struct decoding.
 crates/riont-field/  Field geometry: built-in + PathPlanner JSON maps, wall
                      classification, braille-card math.
 src/main.rs          CLI (team/IP resolve), terminal setup, editor suspend/resume
 src/app.rs           App state, key handling, palette/toasts. Pure logic, no rendering.
 src/config.rs        ~/.config/riont/config.json: targets, presets, SSH settings.
 src/ops.rs           Product-side background ops (SSH robot-code restart).
-src/ui/mod.rs        Layout: HUD, tree, inspector dock, watchlist card matrix, overlays.
+src/ui/mod.rs        Layout: HUD (with preset bar), tree, inspect dock, watchlist card matrix, overlays.
 src/ui/tree.rs       Collapsible topic tree model (rebuilt per frame).
 scripts/             release.sh, screenshot.py, fetch_field.py (season maps)
 test/                E2E contract harness + fake-robot NT4 server
@@ -46,9 +46,11 @@ unbounded MPSC channels (`NtUpdate` downstream, `ClientCommand` upstream),
 batched at 50 ms. The render loop ticks at ~120 Hz, but ratatui's diffing
 means only changed cells hit the terminal.
 
-Per-topic telemetry: publish rate (Hz, 2 s sliding window) and Δ since
-last change. The client measures RTT/clock offset internally — used only
-for clock-synced publishes, never shown as a headline metric.
+Per-topic telemetry: continuous interval-based publish rate (Hz; 2 s active
+window, up to 10 s for slow topics down to 0.1 Hz, decaying to 0.0 Hz when
+updates stop) and Δ since last change. The client measures RTT/clock offset
+internally — used only for clock-synced publishes, never shown as a headline
+metric.
 
 ## NT4 protocol notes
 

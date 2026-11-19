@@ -2,17 +2,14 @@
 
 A keyboard-only NetworkTables (NT4) dashboard for FRC. Rust + ratatui. Pronounced "RINT"
 
-Find a topic fast, see its value clearly, right now — with nothing to
-configure.
-
 ![RIONT connected to a robot](docs/screenshot-main.png)
 
 ## Features
 
 - **Topic tree** — collapsible namespaces with inline values, type tags and
   publish rates; fuzzy search with `/` jumps straight to a topic.
-- **Inspector dock** — passively mirrors the cursor's full path, type,
-  flags, rate, Δ and raw value. No navigation needed to read metadata.
+- **Inspector dock (`INSPECT`)** — passively mirrors the cursor's full path,
+  type, flags, rate, Δ and raw value. No navigation needed to read metadata.
 - **Watchlist** — `Space` pins any topic as a live card, sized by type;
   a directory pin becomes a GROUP: its cards get their own column under
   a `─ Folder (n) ─` header (n = live topic count), overflowing into
@@ -30,10 +27,13 @@ configure.
   robot code over SSH, copy a topic path.
 - **Connection picker** — `c` connects to a saved target or any typed
   address (team number, IP, or IP:port).
-- **Workspace presets** — `1`-`9` loads a named topic list from
-  `config.json`. A trailing `/*` pins a whole subtree and adopts topics the
-  robot starts publishing later.
-- **Driver-station HUD** — link state (`ONLINE (address)`, or a red
+- **Workspace presets** — slots `[1]`–`[9]` sit in the top-right HUD (showing
+  `[N:name]` for the active or hovered slot, with `*` when modified). `1`–`9`
+  loads a slot immediately and `u` restores the previous view; `p` focuses the
+  preset bar to browse (`j`/`k`), save/overwrite (`Space`), load (`Enter`),
+  rename (`r`), or clear (`x`) slots in `config.json`. A trailing `/*` pins a
+  whole subtree and adopts topics the robot starts publishing later.
+- **Driver-station HUD** — link state (`CONNECTED (address)`, or a red
   `DISCONNECTED` whose dots march while RIONT retries, next to the
   address it is retrying) and `RUNTIME` (how long the current connection
   has been up; freezes on disconnect, restarts from zero on reconnect).
@@ -61,7 +61,8 @@ configure.
 | `/` | fuzzy search; `Space` pins a match, `Enter` jumps to it | |
 | `c` / `Shift+C` | connection picker | |
 | `:` / `Ctrl-P` | command palette | |
-| `1`-`9` | load workspace preset | |
+| `1`-`9` | load workspace preset slot `1`–`9` | |
+| `p` | focus top-right preset bar (`j`/`k` move, `Space` save/overwrite, `Enter` load, `r` rename, `x` clear, `Esc` back) | |
 | `u` | restore previous watchlist (undo a preset load / clear) | same |
 | `q` / `Ctrl-C` | quit | |
 
@@ -126,9 +127,9 @@ the `RIONT_CONFIG` environment variable — useful for portable installs):
     {"name": "USB Tether", "ip": "172.22.11.2"},
     {"name": "Team 118",   "ip": "10.1.18.2"}
   ],
-  "presets": {
-    "swerve": ["Swerve/*", "SmartDashboard/Battery Voltage"],
-    "vision": ["limelight-front/*"]
+  "preset_slots": {
+    "1": {"name": "swerve", "topics": ["Swerve/*", "SmartDashboard/Battery Voltage"]},
+    "2": {"name": "vision", "topics": ["limelight-front/*"]}
   },
   "system": {
     "ssh_user": "admin",
@@ -137,10 +138,12 @@ the `RIONT_CONFIG` environment variable — useful for portable installs):
 }
 ```
 
-Presets are saved from the palette (`Watchlist: Save Active as Preset`) and
-load with `1`-`9`. Commit `config.json` to your team repo so everyone gets
-the same views. The live watchlist persists to `last_view` after every
-change and is restored on the next launch.
+Presets are saved in numbered slots (`1`–`9`) via the top-right preset bar
+(`p`, then `j`/`k` and `Space`) or the palette (`Watchlist: Save Active as
+Preset`), and load with `1`–`9`. Legacy name-keyed `"presets"` entries remain
+supported and migrate automatically when saved. Commit `config.json` to your
+team repo so everyone gets the same views. The live watchlist persists to
+`last_view` after every change and is restored on the next launch.
 
 ## Development & releases
 

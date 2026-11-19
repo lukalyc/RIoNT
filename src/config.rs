@@ -120,6 +120,17 @@ impl Default for FieldSettings {
     }
 }
 
+/// One numbered workspace preset slot (`1..=9`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresetSlot {
+    /// Optional short label shown when loaded or hovered (`[1:bringup]`).
+    #[serde(default)]
+    pub name: String,
+    /// Pinned topics (`prefix/*` for subtree globs).
+    #[serde(default)]
+    pub topics: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
@@ -131,10 +142,13 @@ pub struct Config {
     pub last_view: Vec<String>,
     #[serde(default)]
     pub saved_targets: Vec<SavedTarget>,
-    /// Workspace presets: name -> topic list. A trailing `/*` subscribes a
-    /// whole subtree.
+    /// Legacy name-keyed workspace presets (`name -> topic list`), retained for
+    /// backward compatibility with existing config files and migrated on write.
     #[serde(default)]
     pub presets: std::collections::BTreeMap<String, Vec<String>>,
+    /// Numbered workspace preset slots (`1..=9`).
+    #[serde(default)]
+    pub preset_slots: std::collections::BTreeMap<u8, PresetSlot>,
     #[serde(default)]
     pub system: SystemSettings,
     #[serde(default)]
@@ -163,6 +177,7 @@ impl Config {
                 },
             ],
             presets: std::collections::BTreeMap::new(),
+            preset_slots: std::collections::BTreeMap::new(),
             system: SystemSettings::default(),
             field: FieldSettings::default(),
             was_corrupt: false,
@@ -246,11 +261,56 @@ impl Config {
         v
     }
 
-    /// Workspace presets in file order (BTreeMap keeps them stable).
-    pub fn preset_list(&self) -> Vec<(String, Vec<String>)> {
-        self.presets
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+    /// Resolve numbered preset slots `1..=9` (`0..9` indexed), folding in any
+    /// legacy name-keyed `presets` into the first free slots without moving
+    /// explicit slot entries.
+    pub fn resolved_slots(&self) -> [Option<PresetSlot>; 9] {
+        let mut slots: [Option<PresetSlot>; 9] = Default::default();
+        for (&slot, ps) in &self.preset_slots {
+            if (1..=9).contains(&slot) {
+                slots[(slot - 1) as usize] = Some(ps.clone());
+            }
+        }
+        for (name, topics) in &self.presets {
+            let already = slots
+                .iter()
+                .flatten()
+                .any(|s| &s.name == name && &s.topics == topics);
+            if already {
+                continue;
+            }
+            if let Some(empty) = slots.iter_mut().find(|s| s.is_none()) {
+                *empty = Some(PresetSlot {
+                    name: name.clone(),
+                    topics: topics.clone(),
+                });
+            }
+        }
+        slots
+    }
+
+    /// Materialize legacy name-keyed `presets` into `preset_slots` before a
+    /// mutation so slot indices never shift when new presets are saved.
+    pub fn migrate_legacy_presets_to_slots(&mut self) {
+        if self.presets.is_empty() {
+            return;
+        }
+        let resolved = self.resolved_slots();
+        self.preset_slots.clear();
+        for (idx, slot) in resolved.into_iter().enumerate() {
+            if let Some(ps) = slot {
+                self.preset_slots.insert((idx + 1) as u8, ps);
+            }
+        }
+        self.presets.clear();
+    }
+
+    /// Occupied slots in `1..=9` order as `(zero_based_idx, PresetSlot)`.
+    pub fn occupied_slots(&self) -> Vec<(usize, PresetSlot)> {
+        self.resolved_slots()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.map(|ps| (idx, ps)))
             .collect()
     }
 }
@@ -294,5 +354,51 @@ mod tests {
             .position(|n| *n == default_map())
             .expect("default map must be a built-in");
         assert_eq!(crate::field::BUILTIN_MAPS[(pos + 1) % 3], "2024-crescendo");
+    }
+
+    #[test]
+    fn preset_slots_roundtrip_named_and_unnamed() {
+        let mut cfg = Config::with_defaults();
+        cfg.preset_slots.insert(
+            1,
+            PresetSlot {
+                name: "bringup".into(),
+                topics: vec!["Swerve/*".into()],
+            },
+        );
+        cfg.preset_slots.insert(
+            4,
+            PresetSlot {
+                name: String::new(),
+                topics: vec!["SmartDashboard/Battery Voltage".into()],
+            },
+        );
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let parsed: Config = serde_json::from_str(&json).expect("deserialize");
+        let slots = parsed.resolved_slots();
+        assert_eq!(slots[0].as_ref().map(|s| s.name.as_str()), Some("bringup"));
+        assert!(slots[1].is_none());
+        assert!(slots[2].is_none());
+        assert_eq!(slots[3].as_ref().map(|s| s.name.as_str()), Some(""));
+        assert_eq!(
+            slots[3].as_ref().map(|s| s.topics.as_slice()),
+            Some(["SmartDashboard/Battery Voltage".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn legacy_presets_resolve_into_free_slots_without_clobbering_explicit() {
+        let mut cfg = Config::with_defaults();
+        cfg.preset_slots.insert(
+            1,
+            PresetSlot {
+                name: "bringup".into(),
+                topics: vec!["Bringup/*".into()],
+            },
+        );
+        cfg.presets.insert("swerve".into(), vec!["Swerve/*".into()]);
+        let slots = cfg.resolved_slots();
+        assert_eq!(slots[0].as_ref().map(|s| s.name.as_str()), Some("bringup"));
+        assert_eq!(slots[1].as_ref().map(|s| s.name.as_str()), Some("swerve"));
     }
 }

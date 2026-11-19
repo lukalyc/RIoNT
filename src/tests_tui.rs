@@ -165,8 +165,8 @@ fn hud_online_shows_link_runtime_and_cargo_version() {
     t.connect();
     t.feed_battery();
     let l0 = t.render().remove(0);
-    assert!(l0.contains("ONLINE"), "{l0}");
-    assert!(l0.contains("127.0.0.1"), "{l0}");
+    assert!(l0.contains("[CONNECTED (127.0.0.1)]"), "{l0}");
+    assert!(!l0.contains("DISCONNECTED"), "{l0}");
     assert!(l0.contains("RUNTIME: "), "{l0}");
     // The header carries no robot-code indicator: link state + RUNTIME.
     assert!(!l0.contains("CODE"), "{l0}");
@@ -274,6 +274,36 @@ fn hud_while_offline_names_the_target_it_is_trying() {
     t.app.set_disconnected();
     let l0 = t.render().remove(0);
     assert!(l0.contains("127.0.0.1"), "{l0}");
+}
+
+#[test]
+fn hud_wraps_version_in_dimmed_brackets_aligned_with_tree_border() {
+    let mut t = Tui::new();
+    let lines = t.render();
+    let version = format!("RIONT v{}", env!("CARGO_PKG_VERSION"));
+    let expected_prefix = format!("[{version}]  [");
+    assert!(
+        lines[0].starts_with(&expected_prefix),
+        "HUD row 0 must start with bracketed version at col 0: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1].starts_with('┌'),
+        "tree top-left border must sit at col 0 under '[': {}",
+        lines[1]
+    );
+
+    let buf = t.term.backend().buffer();
+    let close_x = 1 + version.chars().count();
+    let next_open_x = close_x + 3;
+    let open_cell = &buf.content[0];
+    let close_cell = &buf.content[close_x];
+    let next_open_cell = &buf.content[next_open_x];
+    assert_eq!(open_cell.symbol(), "[");
+    assert_eq!(close_cell.symbol(), "]");
+    assert_eq!(next_open_cell.symbol(), "[");
+    assert_eq!(open_cell.fg, close_cell.fg);
+    assert_eq!(open_cell.fg, next_open_cell.fg);
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +649,14 @@ fn feed_struct_topic(t: &mut Tui, name: &str, schema: Option<&str>, bytes: Vec<u
     topic.struct_schema = schema.map(|s| s.to_string());
     t.feed_owned(vec![(name.to_string(), NtValue::Raw(bytes))]);
     t.jump("SwerveModuleState");
+}
+
+#[test]
+fn inspector_dock_title_reads_inspect() {
+    let mut t = Tui::new();
+    let text = t.text();
+    assert!(text.contains(" INSPECT "), "{text}");
+    assert!(!text.contains(" INSPECTOR "), "{text}");
 }
 
 #[test]
@@ -1475,4 +1513,424 @@ fn watchlist_folder_of_long_arrays_never_overflows_its_columns() {
         tops >= 13,
         "expected 10 cards + 3 pane corners: {tops}\n{text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Topic Hz rate expiration & edit read-back accounting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stale_topic_renders_zero_hz_in_watchlist_and_inspector() {
+    let mut t = Tui::new();
+    t.connect();
+    let stale_at = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    t.app.store.apply_value(
+        "SmartDashboard/Static",
+        NtValue::Double(3.5),
+        1_000,
+        stale_at,
+    );
+    t.jump("Static");
+    t.key(KeyCode::Char(' '));
+    t.app.toasts.clear();
+
+    let text = t.text();
+    assert!(
+        text.matches("0.0 Hz").count() >= 2,
+        "expected 0.0 Hz in both inspector and watchlist card:\n{text}"
+    );
+    assert!(
+        !text.contains("0.5 Hz"),
+        "stale topic must not stay frozen at 0.5 Hz:\n{text}"
+    );
+}
+
+#[test]
+fn live_edit_readback_does_not_double_count_hz() {
+    let mut t = Tui::new();
+    t.connect();
+    let old = std::time::Instant::now() - std::time::Duration::from_secs(5);
+    t.app
+        .store
+        .apply_value("SmartDashboard/kP", NtValue::Double(0.012), 1_000, old);
+    t.jump("kp");
+    t.key(KeyCode::Char('e'));
+    t.type_str("0.05");
+    t.key(KeyCode::Enter);
+
+    let last_before = t.app.store.topics["SmartDashboard/kP"].last_update;
+    let hz_before = t.app.store.topics["SmartDashboard/kP"]
+        .hz()
+        .expect("rate present");
+    assert!(
+        (hz_before - 0.2).abs() < 0.05,
+        "expected ~0.2 Hz across 5s interval, got {hz_before}"
+    );
+
+    t.app.on_publish_verified(
+        "SmartDashboard/kP",
+        &NtValue::Double(0.05),
+        &Some(NtValue::Double(0.05)),
+    );
+    assert_eq!(
+        t.app.store.topics["SmartDashboard/kP"].last_update,
+        last_before
+    );
+    let hz_after = t.app.store.topics["SmartDashboard/kP"]
+        .hz()
+        .expect("rate present");
+    assert!(
+        hz_after < 0.5,
+        "read-back confirmation must not double-count live edit: {hz_after}"
+    );
+}
+
+#[test]
+fn watchlist_card_renders_fine_grained_hz_rate() {
+    use std::time::{Duration, Instant};
+    let mut t = Tui::new();
+    t.connect();
+    let now = Instant::now();
+    for (i, ms) in [(0, 1400u64), (1, 700), (2, 0)] {
+        t.app.store.apply_value(
+            "SmartDashboard/Ramp",
+            NtValue::Double(i as f64),
+            (i + 1) * 1_000_000,
+            now - Duration::from_millis(ms),
+        );
+    }
+    t.jump("Ramp");
+    t.key(KeyCode::Char(' '));
+    t.app.toasts.clear();
+
+    let text = t.text();
+    assert!(
+        text.contains("1.4 Hz"),
+        "expected continuous 1.4 Hz rate, got:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HUD preset bar, focus flow, single-screen save/overwrite, dynamic limits
+// ---------------------------------------------------------------------------
+
+fn seed_slot(t: &mut Tui, slot: u8, name: &str, topics: &[&str]) {
+    t.app.config.preset_slots.insert(
+        slot,
+        crate::config::PresetSlot {
+            name: name.into(),
+            topics: topics.iter().map(|s| (*s).to_string()).collect(),
+        },
+    );
+}
+
+#[test]
+fn preset_bar_renders_in_hud_top_right_and_hides_inactive_names() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    seed_slot(&mut t, 1, "bringup", &["SmartDashboard/Battery Voltage"]);
+    seed_slot(&mut t, 2, "swerve", &["Swerve/FrontLeft/Velocity"]);
+
+    t.key(KeyCode::Char('1'));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:bringup]"), "{l0}");
+    assert!(l0.contains("[2]"), "{l0}");
+    assert!(
+        !l0.contains("swerve"),
+        "inactive name must stay hidden: {l0}"
+    );
+    assert!(l0.ends_with("[9]"), "preset bar must sit flush right: {l0}");
+}
+
+#[test]
+fn p_focuses_preset_bar_jk_navigates_and_reveals_hovered_name() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    seed_slot(&mut t, 1, "bringup", &["SmartDashboard/Battery Voltage"]);
+    seed_slot(&mut t, 2, "swerve", &["Swerve/FrontLeft/Velocity"]);
+
+    t.key(KeyCode::Char('1'));
+    assert_eq!(t.app.focus, Focus::Watchlist);
+
+    t.key(KeyCode::Char('p'));
+    assert_eq!(t.app.focus, Focus::Presets);
+    t.key(KeyCode::Char('k'));
+    assert_eq!(t.app.preset_cursor, 1);
+
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:brin"), "{l0}");
+    assert!(l0.contains("[2:swerve]"), "{l0}");
+
+    t.key(KeyCode::Char('j'));
+    assert_eq!(t.app.preset_cursor, 0);
+
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Watchlist);
+
+    // Return to Tree, enter Presets via `p`, Esc returns to Tree.
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::Tree);
+    t.key(KeyCode::Char('p'));
+    assert_eq!(t.app.focus, Focus::Presets);
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Tree);
+}
+
+#[test]
+fn tab_stays_strictly_between_tree_and_watchlist() {
+    let mut t = Tui::new();
+    assert_eq!(t.app.focus, Focus::Tree);
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::Watchlist);
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::Tree);
+}
+
+#[test]
+fn preset_bar_space_saves_named_and_unnamed_and_single_screen_overwrites() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    t.pin_via_search("batt");
+
+    t.key(KeyCode::Char('p'));
+    t.key(KeyCode::Char('k'));
+    t.key(KeyCode::Char('k')); // slot 3
+    t.key(KeyCode::Char(' '));
+    assert_eq!(t.app.mode, Mode::Prompt);
+
+    // Blank Enter saves an unnamed preset in slot 3.
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert_eq!(t.app.config.preset_slots[&3].name, "");
+    assert_eq!(t.app.active_preset, Some(2));
+
+    // Pin another topic, then overwrite slot 3 on a single prompt screen.
+    t.key(KeyCode::Esc);
+    t.pin_via_search("kp");
+    t.key(KeyCode::Char('p'));
+    t.key(KeyCode::Char(' '));
+    let prompt_text = t.text();
+    assert!(prompt_text.contains("SAVE PRESET"), "{prompt_text}");
+    assert!(prompt_text.contains("Overwrites slot 3"), "{prompt_text}");
+
+    t.type_str("bringup");
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert_eq!(t.app.config.preset_slots[&3].name, "bringup");
+    assert_eq!(t.app.config.preset_slots[&3].topics.len(), 2);
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[3:bringup]"), "{l0}");
+}
+
+#[test]
+fn preset_name_overflow_renders_red_and_blocks_save_dynamically() {
+    let mut wide = Tui::with_size(150, 36);
+    wide.connect();
+    wide.feed_battery();
+    wide.render();
+    let max_150 = wide.app.preset_name_max_len();
+
+    let mut t = Tui::with_size(120, 36);
+    t.connect();
+    t.feed_battery();
+    t.pin_via_search("batt");
+    t.render();
+    let max_120 = t.app.preset_name_max_len();
+    assert!(
+        max_150 > max_120,
+        "wider screen must allow longer preset names: 150->{max_150}, 120->{max_120}"
+    );
+
+    t.key(KeyCode::Char('p'));
+    t.key(KeyCode::Char(' '));
+    let ok_name = "a".repeat(max_120);
+    t.type_str(&ok_name);
+    t.type_str("ZZ");
+
+    let lines = t.render();
+    let text = lines.join("\n");
+    assert!(text.contains("Name is too long"), "{text}");
+
+    let input_y = lines
+        .iter()
+        .position(|l| l.contains("Name (optional):"))
+        .expect("input row");
+    let buf = t.term.backend().buffer();
+    let w = buf.area.width as usize;
+    let z_cells: Vec<_> = (0..w)
+        .map(|x| &buf.content[input_y * w + x])
+        .filter(|c| c.symbol() == "Z")
+        .collect();
+    assert_eq!(z_cells.len(), 2, "expected 2 overflow Z chars");
+    for c in z_cells {
+        assert_eq!(c.fg, ratatui::style::Color::Red);
+    }
+
+    // Enter must refuse to save while over the dynamic limit.
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.mode, Mode::Prompt);
+    assert!(!t.app.config.preset_slots.contains_key(&1));
+
+    // Trimming back within limit lets Enter save.
+    t.key(KeyCode::Backspace);
+    t.key(KeyCode::Backspace);
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert_eq!(t.app.config.preset_slots[&1].name, ok_name);
+}
+
+#[test]
+fn preset_bar_rename_and_clear_slot() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    seed_slot(&mut t, 1, "old", &["SmartDashboard/Battery Voltage"]);
+
+    t.key(KeyCode::Char('p'));
+    t.key(KeyCode::Char('r'));
+    assert_eq!(t.app.mode, Mode::Prompt);
+    for _ in 0..3 {
+        t.key(KeyCode::Backspace);
+    }
+    t.type_str("new");
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert_eq!(t.app.config.preset_slots[&1].name, "new");
+
+    // Cancel clear with Esc leaves slot intact.
+    t.key(KeyCode::Char('x'));
+    assert_eq!(t.app.mode, Mode::ConfirmClearPreset);
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert!(t.app.config.preset_slots.contains_key(&1));
+
+    // Confirm clear with y removes slot.
+    t.key(KeyCode::Char('x'));
+    assert_eq!(t.app.mode, Mode::ConfirmClearPreset);
+    t.key(KeyCode::Char('y'));
+    assert_eq!(t.app.mode, Mode::Normal);
+    assert!(!t.app.config.preset_slots.contains_key(&1));
+}
+
+#[test]
+fn active_preset_tracks_dirty_state_and_undo_restores() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    seed_slot(&mut t, 1, "bringup", &["SmartDashboard/Battery Voltage"]);
+    seed_slot(&mut t, 2, "swerve", &["Swerve/FrontLeft/Velocity"]);
+
+    t.key(KeyCode::Char('1'));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:bringup]"), "{l0}");
+    assert!(!l0.contains("[1:bringup*]"), "{l0}");
+
+    t.pin_via_search("kp");
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:bringup*]"), "{l0}");
+
+    // Unpinning returns to clean active preset.
+    t.key(KeyCode::Char('/'));
+    t.type_str("kp");
+    t.key(KeyCode::Char(' '));
+    t.key(KeyCode::Esc);
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:bringup]"), "{l0}");
+    assert!(!l0.contains("[1:bringup*]"), "{l0}");
+
+    // Load slot 2, then `u` restores slot 1.
+    t.key(KeyCode::Char('2'));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[2:swerve]"), "{l0}");
+    t.key(KeyCode::Char('u'));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[1:bringup]"), "{l0}");
+}
+
+#[test]
+fn status_bar_shows_u_restore_and_preset_bar_hints() {
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+
+    let tree_bottom = t.render().pop().expect("status row");
+    assert!(tree_bottom.contains("u restore"), "{tree_bottom}");
+    assert!(tree_bottom.contains("1-9/p presets"), "{tree_bottom}");
+
+    t.key(KeyCode::Tab);
+    let watch_bottom = t.render().pop().expect("status row");
+    assert!(watch_bottom.contains("u restore"), "{watch_bottom}");
+
+    t.key(KeyCode::Char('p'));
+    let preset_bottom = t.render().pop().expect("status row");
+    assert!(preset_bottom.contains("j/k move"), "{preset_bottom}");
+    assert!(preset_bottom.contains("spc save"), "{preset_bottom}");
+    assert!(preset_bottom.contains("esc back"), "{preset_bottom}");
+}
+
+#[test]
+fn narrow_hud_keeps_left_status_intact() {
+    let mut t = Tui::with_size(90, 20);
+    t.connect();
+    t.feed_battery();
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("RIONT v"), "{l0}");
+    assert!(l0.contains("RUNTIME: "), "{l0}");
+    assert!(l0.contains("topics"), "{l0}");
+}
+
+#[test]
+fn preset_bar_hover_styles_and_suppresses_redundant_slot_name() {
+    use ratatui::style::{Color, Modifier};
+    const AMBER: Color = Color::Rgb(0xFA, 0xBD, 0x2F);
+    const MUTED: Color = Color::Rgb(0x7C, 0x6F, 0x64);
+
+    let mut t = Tui::new();
+    t.connect();
+    t.feed_battery();
+    seed_slot(&mut t, 1, "1", &["SmartDashboard/Battery Voltage"]);
+    seed_slot(&mut t, 2, "bench", &["Swerve/FrontLeft/Velocity"]);
+    seed_slot(&mut t, 3, "", &["SmartDashboard/kP"]);
+
+    // Load slot 2, then press `p` to hover the currently loaded preset.
+    t.key(KeyCode::Char('2'));
+    t.key(KeyCode::Char('p'));
+    let l0 = t.render().remove(0);
+    let col = l0.find("[2:bench]").expect("active+hovered [2:bench]");
+    let buf = t.term.backend().buffer();
+    let open = &buf.content[col];
+    let inner_num = &buf.content[col + 1];
+    let inner_b = &buf.content[col + 3];
+    let close = &buf.content[col + 8];
+    assert_eq!(open.fg, AMBER);
+    assert_eq!(close.fg, AMBER);
+    assert_eq!(inner_num.fg, Color::Cyan);
+    assert_eq!(inner_b.fg, Color::Cyan);
+    assert!(!open.modifier.contains(Modifier::REVERSED));
+    assert!(!inner_num.modifier.contains(Modifier::REVERSED));
+
+    // Move left (`j`) to slot 1 whose name matches its slot digit `"1"`:
+    // must render `[1]` (not `[1:1]`), with muted brackets and amber `1` (no reverse).
+    t.key(KeyCode::Char('j'));
+    let l0 = t.render().remove(0);
+    assert!(!l0.contains("[1:1]"), "must not show [1:1]: {l0}");
+    let col1 = l0.find("[1]").expect("[1] pill");
+    let buf = t.term.backend().buffer();
+    let open1 = &buf.content[col1];
+    let num1 = &buf.content[col1 + 1];
+    let close1 = &buf.content[col1 + 2];
+    assert_eq!(open1.fg, MUTED);
+    assert_eq!(close1.fg, MUTED);
+    assert_eq!(num1.fg, AMBER);
+    assert!(!num1.modifier.contains(Modifier::REVERSED));
+
+    // Move right twice (`k`, `k`) to unnamed slot 3: must render `[3]`.
+    t.key(KeyCode::Char('k'));
+    t.key(KeyCode::Char('k'));
+    let l0 = t.render().remove(0);
+    assert!(l0.contains("[3]"), "{l0}");
+    assert!(!l0.contains("[3:"), "{l0}");
 }

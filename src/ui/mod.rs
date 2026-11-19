@@ -1,12 +1,13 @@
 //! Layout + rendering for the dashboard.
 //!
 //! Geometry: a 35% left control column (Topic Tree 70% H + passive
-//! Inspector Dock 30% H) and a 65% full-height Watchlist Canvas, under a
-//! one-line Driver-Station HUD.
+//! `INSPECT` Dock 30% H) and a 65% full-height Watchlist Canvas, under a
+//! one-line Driver-Station HUD with a top-right `[1]`–`[9]` preset bar.
 //!
 //! Color rules (semantic neutrality):
 //! - borders/chrome: dark grey, so data values carry the screen
 //! - active pane border: cyan (watchlist) / amber (tree); inactive grey
+//! - preset pills: cyan (active slot) / amber (hovered slot); amber brackets when hovering active
 //! - numbers: bright cyan; booleans: green TRUE / muted red FALSE;
 //!   strings: warm amber; array brackets cyan with neutral values
 //! - rates and Δ timers: muted grey — telemetry, never an alarm
@@ -134,6 +135,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Mode::Prompt => draw_prompt(f, app),
         Mode::PickTarget => draw_pick_target(f, app),
         Mode::PickPreset => draw_pick_preset(f, app),
+        Mode::ConfirmClearPreset => draw_confirm_clear_preset(f, app),
         Mode::SettingsView => draw_settings_view(f, app),
         Mode::FieldView => draw_field_view(f, app),
         Mode::Normal => {}
@@ -145,7 +147,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 // HUD: driver-station diagnostics
 // ---------------------------------------------------------------------------
 
-fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
+fn draw_hud(f: &mut Frame, app: &mut App, area: Rect) {
     let ip = app
         .target
         .split(':')
@@ -154,7 +156,7 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         .to_string();
     let comm = if app.connected {
         Span::styled(
-            format!("ONLINE ({})", ip),
+            format!("CONNECTED ({})", ip),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -194,10 +196,11 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut line = vec![
+        dim("["),
         // Single source of truth: Cargo.toml's `version`, baked in at
         // compile time. Never hardcode a version string here.
         bold(format!("RIONT v{}", env!("CARGO_PKG_VERSION"))),
-        dim("  ["),
+        dim("]  ["),
     ];
     line.extend(comm);
     line.extend([
@@ -207,7 +210,183 @@ fn draw_hud(f: &mut Frame, app: &App, area: Rect) {
         dim("]"),
         dim(format!("  {} topics", app.store.topics.len())),
     ]);
+
+    let left_len: usize = line.iter().map(|s| s.content.chars().count()).sum();
+    app.hud_width = area.width;
+    app.hud_left_width = left_len as u16;
+
+    let avail = (area.width as usize).saturating_sub(left_len + 2);
+    let (bar_spans, bar_w) = build_preset_bar(app, avail);
+    if !bar_spans.is_empty() && left_len + 2 + bar_w <= area.width as usize {
+        let pad = (area.width as usize) - left_len - bar_w;
+        line.push(plain(" ".repeat(pad)));
+        line.extend(bar_spans);
+    }
+
     f.render_widget(Paragraph::new(Line::from(line)), area);
+}
+
+/// Return the preset label to display after `N:`, suppressing empty names or a
+/// redundant name equal to the slot's own digit (so slot 1 never shows `[1:1]`).
+fn display_preset_name(slot_idx: usize, name: &str) -> &str {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed == (slot_idx + 1).to_string() {
+        ""
+    } else {
+        trimmed
+    }
+}
+
+fn preset_pill_spans(
+    idx: usize,
+    occupied: bool,
+    active: bool,
+    hovered: bool,
+    inner_text: String,
+) -> Vec<Span<'static>> {
+    if hovered && active {
+        vec![
+            Span::styled("[", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                inner_text,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("]", Style::default().fg(AMBER).add_modifier(Modifier::BOLD)),
+        ]
+    } else if hovered {
+        vec![
+            dim("["),
+            Span::styled(
+                inner_text,
+                Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            ),
+            dim("]"),
+        ]
+    } else if active {
+        vec![
+            dim("["),
+            Span::styled(
+                inner_text,
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            ),
+            dim("]"),
+        ]
+    } else if occupied {
+        vec![dim("["), plain(inner_text), dim("]")]
+    } else {
+        vec![Span::styled(
+            format!("[{}]", idx + 1),
+            Style::default().fg(BORDER_GREY),
+        )]
+    }
+}
+
+fn build_preset_bar(app: &App, avail: usize) -> (Vec<Span<'static>>, usize) {
+    let slots = app.preset_slots();
+    let hovered_slot = if app.focus == Focus::Presets {
+        Some(app.preset_cursor.min(8))
+    } else {
+        None
+    };
+    let active_slot = app.active_preset.filter(|&i| i < 9);
+
+    if avail >= 35 {
+        let mut extra = avail - 35;
+        let show_dirty = active_slot.is_some() && app.preset_dirty && extra >= 1;
+        if show_dirty {
+            extra -= 1;
+        }
+
+        let mut names: [String; 9] = Default::default();
+        // Priority: hovered slot expands first, then active slot.
+        if let Some(hi) = hovered_slot {
+            if let Some(ps) = &slots[hi] {
+                let disp = display_preset_name(hi, &ps.name);
+                if !disp.is_empty() && extra >= 2 {
+                    let budget = extra - 1;
+                    let shown = ellipsize(disp, budget);
+                    extra -= 1 + shown.chars().count();
+                    names[hi] = shown;
+                }
+            }
+        }
+        if let Some(ai) = active_slot {
+            if Some(ai) != hovered_slot {
+                if let Some(ps) = &slots[ai] {
+                    let disp = display_preset_name(ai, &ps.name);
+                    if !disp.is_empty() && extra >= 2 {
+                        let budget = extra - 1;
+                        let shown = ellipsize(disp, budget);
+                        names[ai] = shown;
+                    }
+                }
+            }
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, slot) in slots.iter().enumerate() {
+            if i > 0 {
+                spans.push(plain(" "));
+            }
+            let occupied = slot.is_some();
+            let active = active_slot == Some(i);
+            let hovered = hovered_slot == Some(i);
+            let mut inner = format!("{}", i + 1);
+            if !names[i].is_empty() {
+                inner.push(':');
+                inner.push_str(&names[i]);
+            }
+            if active && show_dirty {
+                inner.push('*');
+            }
+            spans.extend(preset_pill_spans(i, occupied, active, hovered, inner));
+        }
+        let w = spans.iter().map(|s| s.content.chars().count()).sum();
+        return (spans, w);
+    }
+
+    if avail >= 27 {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, slot) in slots.iter().enumerate() {
+            let occupied = slot.is_some();
+            let active = active_slot == Some(i);
+            let hovered = hovered_slot == Some(i);
+            spans.extend(preset_pill_spans(
+                i,
+                occupied,
+                active,
+                hovered,
+                format!("{}", i + 1),
+            ));
+        }
+        let w = spans.iter().map(|s| s.content.chars().count()).sum();
+        return (spans, w);
+    }
+
+    if avail >= 4 {
+        if let Some(idx) = hovered_slot.or(active_slot) {
+            let occupied = slots[idx].is_some();
+            let active = active_slot == Some(idx);
+            let hovered = hovered_slot == Some(idx);
+            let mut inner = format!("{}", idx + 1);
+            if let Some(ps) = &slots[idx] {
+                let disp = display_preset_name(idx, &ps.name);
+                if !disp.is_empty() {
+                    inner.push(':');
+                    inner.push_str(disp);
+                }
+            }
+            if active && app.preset_dirty {
+                inner.push('*');
+            }
+            let inner = ellipsize(&inner, avail.saturating_sub(2));
+            let spans = preset_pill_spans(idx, occupied, active, hovered, inner);
+            let w = spans.iter().map(|s| s.content.chars().count()).sum();
+            return (spans, w);
+        }
+    }
+
+    (Vec::new(), 0)
 }
 
 /// Wall-clock milliseconds, for the HUD's offline animation. The render
@@ -401,7 +580,7 @@ fn draw_inspector(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER_GREY))
-        .title(Span::styled(" INSPECTOR ", Style::default().fg(MUTED)));
+        .title(Span::styled(" INSPECT ", Style::default().fg(MUTED)));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1682,13 +1861,16 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // advertising them.
     let hints = match app.focus {
         Focus::Tree => {
-            "j/k move  h fold  spc pin  / find  e edit  tab watchlist  g/G ends  1-9 presets  : commands  c connect  q quit"
+            "j/k move  h fold  spc pin  / find  e edit  tab watchlist  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
         }
         Focus::Watchlist if app.watchlist.is_empty() => {
-            "tab tree  1-9 presets  / find  : commands  c connect  q quit"
+            "tab tree  1-9/p presets  u restore  / find  : commands  c connect  q quit"
         }
         Focus::Watchlist => {
-            "h/j/k/l move  x remove  e edit  spc unpin  f field  o overlay  tab tree  g/G ends  1-9 presets  : commands  q quit"
+            "h/j/k/l move  x remove  e edit  spc unpin  f field  o overlay  tab tree  g/G ends  1-9/p presets  u restore  : commands  c connect  q quit"
+        }
+        Focus::Presets => {
+            "j/k move  spc save  enter load  r rename  x clear  1-9 load  esc back"
         }
     };
     f.render_widget(Paragraph::new(Line::from(vec![dim(hints)])), area);
@@ -1855,31 +2037,156 @@ fn draw_connect(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Focused single-input prompt (Add Robot Target / Save Preset).
+/// Focused single-input prompt (Add Robot Target / Save or Rename Preset).
 fn draw_prompt(f: &mut Frame, app: &App) {
-    let area = centered_rect(f.area(), 60, 5);
+    match app.prompt_kind {
+        crate::app::PromptKind::AddTarget => {
+            let area = centered_rect(f.area(), 60, 5);
+            f.render_widget(Clear, area);
+            let mut spans = vec![
+                dim("IP/Team (e.g. \"Practice 10.99.86.2\" or \"118\"): "),
+                plain("[ "),
+                bold(app.prompt_input.clone()),
+                plain("_"),
+                plain(" ]"),
+            ];
+            if let Some(e) = &app.prompt_error {
+                spans.push(err(format!("  {}", e)));
+            }
+            let lines = vec![Line::from(spans), Line::from(dim("enter=save  esc=cancel"))];
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                " [ADD ROBOT TARGET] ",
+                Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            ));
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+        crate::app::PromptKind::SavePreset { slot }
+        | crate::app::PromptKind::RenamePreset { slot } => {
+            let is_rename = matches!(app.prompt_kind, crate::app::PromptKind::RenamePreset { .. });
+            let area = centered_rect(f.area(), 66, 7);
+            f.render_widget(Clear, area);
+
+            let title = if is_rename {
+                format!(" [RENAME PRESET — SLOT {}] ", slot + 1)
+            } else {
+                format!(" [SAVE PRESET — SLOT {}] ", slot + 1)
+            };
+
+            let mut lines: Vec<Line> = Vec::new();
+            if is_rename {
+                lines.push(Line::from(dim(format!(
+                    "Renaming preset slot {}",
+                    slot + 1
+                ))));
+            } else if let Some(existing) = &app.preset_slots()[slot] {
+                let prev = if existing.name.is_empty() {
+                    "(unnamed)".to_string()
+                } else {
+                    existing.name.clone()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "! Overwrites slot {}: {} ({} topics)",
+                        slot + 1,
+                        prev,
+                        existing.topics.len()
+                    ),
+                    Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+                )));
+            } else {
+                lines.push(Line::from(dim(format!(
+                    "Saving {} topics to slot {}",
+                    app.watchlist.len(),
+                    slot + 1
+                ))));
+            }
+
+            let max_len = app.preset_name_max_len();
+            let chars: Vec<char> = app.prompt_input.chars().collect();
+            let ok_part: String = chars.iter().take(max_len).collect();
+            let over_part: String = chars.iter().skip(max_len).collect();
+            let char_len = chars.len();
+
+            let mut input_spans = vec![dim("Name (optional): "), plain("[ "), bold(ok_part)];
+            if !over_part.is_empty() {
+                input_spans.push(Span::styled(
+                    over_part,
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+            }
+            input_spans.push(plain("_ ]"));
+            let counter = format!(" {}/{}", char_len, max_len);
+            if char_len > max_len {
+                input_spans.push(err(counter));
+            } else {
+                input_spans.push(dim(counter));
+            }
+            lines.push(Line::from(input_spans));
+
+            if char_len > max_len {
+                lines.push(Line::from(err(format!(
+                    "Name is too long ({}/{} chars max for this screen)",
+                    char_len, max_len
+                ))));
+            } else if let Some(e) = &app.prompt_error {
+                lines.push(Line::from(err(e.clone())));
+            } else {
+                lines.push(Line::from(""));
+            }
+
+            let footer = if is_rename {
+                "enter=rename (blank clears name)  esc=cancel"
+            } else {
+                "enter=save (blank for unnamed)  esc=cancel"
+            };
+            lines.push(Line::from(dim(footer)));
+
+            let block = Block::default().borders(Borders::ALL).title(Span::styled(
+                title,
+                Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            ));
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+}
+
+fn draw_confirm_clear_preset(f: &mut Frame, app: &App) {
+    let Some(slot) = app.clear_preset_slot else {
+        return;
+    };
+    let area = centered_rect(f.area(), 58, 5);
     f.render_widget(Clear, area);
 
-    let (title, label) = match app.prompt_kind {
-        crate::app::PromptKind::AddTarget => (
-            " [ADD ROBOT TARGET] ",
-            "IP/Team (e.g. \"Practice 10.99.86.2\" or \"118\"): ",
-        ),
-        crate::app::PromptKind::SavePreset => (" [SAVE PRESET] ", "Preset name: "),
+    let summary = match &app.preset_slots()[slot] {
+        Some(ps) => {
+            let label = if ps.name.is_empty() {
+                "(unnamed)".to_string()
+            } else {
+                ps.name.clone()
+            };
+            format!(
+                "Clear slot {}: {} ({} topics)?",
+                slot + 1,
+                label,
+                ps.topics.len()
+            )
+        }
+        None => format!("Clear preset slot {}?", slot + 1),
     };
-    let mut spans = vec![
-        dim(label),
-        plain("[ "),
-        bold(app.prompt_input.clone()),
-        plain("_"),
-        plain(" ]"),
+    let lines = vec![
+        Line::from(Span::styled(
+            summary,
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(dim("y/enter=clear  esc/n=cancel")),
     ];
-    if let Some(e) = &app.prompt_error {
-        spans.push(err(format!("  {}", e)));
-    }
-    let lines = vec![Line::from(spans), Line::from(dim("enter=save  esc=cancel"))];
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
-        title,
+        " [CLEAR PRESET] ",
         Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
     ));
     let inner = block.inner(area);
@@ -1921,7 +2228,7 @@ fn draw_pick_target(f: &mut Frame, app: &App) {
 }
 
 fn draw_pick_preset(f: &mut Frame, app: &App) {
-    let presets = app.config.preset_list();
+    let presets = app.occupied_preset_slots();
     let h = (presets.len() as u16 + 4)
         .min(f.area().height.saturating_sub(4))
         .max(5);
@@ -1929,17 +2236,22 @@ fn draw_pick_preset(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
 
     let mut lines = Vec::new();
-    for (i, (name, topics)) in presets.iter().enumerate() {
-        let marker = if i == app.picker_cursor {
+    for (row, (slot_idx, ps)) in presets.iter().enumerate() {
+        let marker = if row == app.picker_cursor {
             bold("> ")
         } else {
             plain("  ")
         };
+        let label = if ps.name.is_empty() {
+            "(unnamed)".to_string()
+        } else {
+            ps.name.clone()
+        };
         lines.push(Line::from(vec![
             marker,
-            plain(format!("[{}] ", i + 1)),
-            plain(format!("{:<14} ", name)),
-            dim(format!("{} topic(s)", topics.len())),
+            plain(format!("[{}] ", slot_idx + 1)),
+            plain(format!("{:<14} ", label)),
+            dim(format!("{} topics", ps.topics.len())),
         ]));
     }
     lines.push(Line::from(dim("[Enter] Load   [1-9] Quick Load   [Esc]")));
@@ -1978,11 +2290,23 @@ fn draw_settings_view(f: &mut Frame, app: &App) {
             dim(format!("  {}", t.ip)),
         ]));
     }
+    let slots = cfg.occupied_slots();
+    let slot_summary = slots
+        .iter()
+        .map(|(idx, ps)| {
+            if ps.name.is_empty() {
+                format!("[{}]", idx + 1)
+            } else {
+                format!("[{}:{}]", idx + 1, ps.name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        bold(format!("presets ({})", cfg.presets.len())),
+        bold(format!("presets ({})", slots.len())),
         dim(": "),
-        dim(cfg.presets.keys().cloned().collect::<Vec<_>>().join(", ")),
+        dim(slot_summary),
     ]));
     lines.push(Line::from(vec![
         bold("system"),
