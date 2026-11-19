@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-19
+
 ### Added
 
 - **Top-right HUD preset bar (`[1]`–`[9]`).** Numbered preset slots now
