@@ -1148,30 +1148,15 @@ fn pane(t: &mut Tui) -> String {
 fn robot_glyph_snapshots() {
     // Print the actual glyphs once if the snapshot drifts:
     // cargo test robot_glyph_snapshots -- --nocapture
-    for style in ["B", "E"] {
-        let dpm = if style == "B" { 5.2 } else { 3.0 };
+    for (style, dpm) in [("A", 9.0), ("B", 5.2), ("E", 3.0)] {
         println!("{style} @ {dpm}: {:?}", render_glyph(style, dpm));
     }
     // B — rect + center->front tick, at the small-card resolution.
-    assert_eq!(
-        render_glyph("B", 5.2),
-        vec![
-            "\u{2864}\u{28c0}",
-            "\u{283c}\u{28d0}\u{28a1}\u{2803}",
-            "\u{2801}"
-        ]
-    );
+    assert_eq!(render_glyph("B", 5.2), vec!["⣀⡄", "⢫⠐⣚⠄", "⠉"]);
     // E — chevron, at the extra-small resolution.
-    assert_eq!(render_glyph("E", 3.0), vec!["\u{2820}\u{28b2}\u{2803}"]);
+    assert_eq!(render_glyph("E", 3.0), vec!["⠐⡺⠁"]);
     // A — rect + arrow (head folding back INSIDE the frame), normal card.
-    assert_eq!(
-        render_glyph("A", 9.0),
-        vec![
-            "\u{2870}\u{2831}\u{28e6}\u{28c0}",
-            "\u{289c}\u{2840}\u{2810}\u{2801}\u{2871}\u{2801}",
-            "\u{2808}\u{2812}\u{281c}"
-        ]
-    );
+    assert_eq!(render_glyph("A", 9.0), vec!["⢀⡠⠒⠵⡀", "⠱⡀⠐⠉⣛⠄", "⠘⠔⠊"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1217,14 +1202,131 @@ fn swerve_payload(states: &[(f64, f64)]) -> Vec<u8> {
     b
 }
 
-/// Regression: red view at stored heading θ must render the robot glyph
-/// EXACTLY like blue view at −θ (the glyph's heading unit vector is
-/// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
-/// negates; a (cos θ, sin θ) convention would give π − θ). The robot
-/// POSITION was always mirrored via fx(); the heading was not, so
-/// red-view robots faced the wrong way.
+/// Verify all four WPILib cardinal headings render the forward tick in the
+/// expected direction: 0° = East (right), 90° = North (up), 180° = West
+/// (left), -90° = South (down).
 #[test]
-fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
+fn robot_heading_matches_wpilib_cardinal_directions() {
+    use ratatui::{style::Color, symbols::Marker, widgets::canvas::Canvas};
+
+    // Braille dot bit layout within a 2×4 terminal cell (dx in 0..2, dy in 0..4,
+    // top-to-bottom y).
+    const BITS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+
+    let tick_dots = |deg: f64| -> Vec<(f64, f64)> {
+        let (cols, rows) = (20u16, 10u16);
+        let dpm = 6.0;
+        let cx_dot = (cols as i32 * 2) / 2;
+        let cy_dot = (rows as i32 * 4) / 2;
+        let mut term = Terminal::new(TestBackend::new(cols, rows)).expect("backend");
+        term.draw(|f| {
+            let canvas = Canvas::default()
+                .x_bounds([0.0, cols as f64 * 2.0 / dpm])
+                .y_bounds([0.0, rows as f64 * 4.0 / dpm])
+                .marker(Marker::Braille)
+                .paint(|ctx| {
+                    crate::ui::draw_robot_style(
+                        ctx,
+                        (
+                            cx_dot as f64 / dpm,
+                            (rows as f64 * 4.0 - cy_dot as f64) / dpm,
+                        ),
+                        deg.to_radians(),
+                        Color::Cyan,
+                        2.0,
+                        2.0,
+                        "B",
+                    );
+                });
+            f.render_widget(canvas, f.area());
+        })
+        .expect("draw");
+        let buf = term.backend().buffer();
+        let mut all_dots: Vec<(i32, i32)> = Vec::new();
+        for y in 0..rows as usize {
+            for x in 0..cols as usize {
+                let ch = buf.content[y * cols as usize + x].symbol().chars().next();
+                if let Some(c) = ch {
+                    let mask = (c as u32).saturating_sub(0x2800) as u8;
+                    for (by, row_bits) in BITS.iter().enumerate() {
+                        for (bx, &bit) in row_bits.iter().enumerate() {
+                            if mask & bit != 0 {
+                                all_dots.push((x as i32 * 2 + bx as i32, y as i32 * 4 + by as i32));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let min_x = all_dots.iter().map(|d| d.0).min().unwrap();
+        let max_x = all_dots.iter().map(|d| d.0).max().unwrap();
+        let min_y = all_dots.iter().map(|d| d.1).min().unwrap();
+        let max_y = all_dots.iter().map(|d| d.1).max().unwrap();
+        let cx = (min_x + max_x) as f64 / 2.0;
+        let cy = (min_y + max_y) as f64 / 2.0;
+        // Keep strictly interior dots (>= 2 dots inside the outer square) so
+        // only the center-to-front tick contributes.
+        all_dots
+            .into_iter()
+            .filter(|&(px, py)| {
+                px >= min_x + 2 && px <= max_x - 2 && py >= min_y + 2 && py <= max_y - 2
+            })
+            .map(|(px, py)| (px as f64 - cx, py as f64 - cy))
+            .collect()
+    };
+
+    let summarize = |dots: &[(f64, f64)]| {
+        assert!(!dots.is_empty());
+        let n = dots.len() as f64;
+        let mean_x = dots.iter().map(|d| d.0).sum::<f64>() / n;
+        let mean_y = dots.iter().map(|d| d.1).sum::<f64>() / n;
+        let min_x = dots.iter().map(|d| d.0).fold(f64::INFINITY, f64::min);
+        let max_x = dots.iter().map(|d| d.0).fold(f64::NEG_INFINITY, f64::max);
+        let min_y = dots.iter().map(|d| d.1).fold(f64::INFINITY, f64::min);
+        let max_y = dots.iter().map(|d| d.1).fold(f64::NEG_INFINITY, f64::max);
+        (mean_x, mean_y, min_x, max_x, min_y, max_y)
+    };
+
+    // 0° -> East (+x)
+    let east = tick_dots(0.0);
+    let (mx, my, minx, maxx, _, _) = summarize(&east);
+    assert!(
+        mx > 1.5 && my.abs() < 0.8 && minx >= -1.0 && maxx >= 3.0,
+        "0° East: {east:?}"
+    );
+
+    // 90° -> North (-y on screen)
+    let north = tick_dots(90.0);
+    let (mx, my, _, _, miny, maxy) = summarize(&north);
+    assert!(
+        my < -1.5 && mx.abs() < 0.8 && maxy <= 1.0 && miny <= -3.0,
+        "90° North: {north:?}"
+    );
+
+    // 180° -> West (-x)
+    let west = tick_dots(180.0);
+    let (mx, my, minx, maxx, _, _) = summarize(&west);
+    assert!(
+        mx < -1.5 && my.abs() < 0.8 && maxx <= 1.0 && minx <= -3.0,
+        "180° West: {west:?}"
+    );
+
+    // -90° -> South (+y on screen)
+    let south = tick_dots(-90.0);
+    let (mx, my, _, _, miny, maxy) = summarize(&south);
+    assert!(
+        my > 1.5 && mx.abs() < 0.8 && miny >= -1.0 && maxy >= 3.0,
+        "-90° South: {south:?}"
+    );
+}
+
+/// Regression: red view at stored heading θ must render the robot glyph
+/// EXACTLY like blue view at π − θ (the WPILib heading unit vector is
+/// (cos θ, sin θ), whose x-mirror is (-cos θ, sin θ) = (cos(π − θ), sin(π − θ))).
+/// The robot POSITION was always mirrored via fx(); mirroring heading as −θ
+/// left red-view robots facing backwards relative to East/West.
+#[test]
+fn red_alliance_heading_mirrors_exactly_like_blue_at_pi_minus_theta() {
     use std::f64::consts::PI;
     let (x, y, theta) = (5.0f64, 4.0f64, 0.75f64 * PI);
     let (robot_len, robot_wid) = (4.0f64, 4.0f64);
@@ -1276,8 +1378,8 @@ fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
     scene(&mut red, x, theta);
 
     let mut blue_m = Tui::new();
-    scene(&mut blue_m, x, -theta); // the apply_value below overwrites x
-                                   // with the MIRRORED position (len − x)
+    scene(&mut blue_m, x, PI - theta); // the apply_value below overwrites x
+                                       // with the MIRRORED position (len − x)
     blue_m.app.store.apply_value(
         "SmartDashboard/botpose_wpiblue",
         NtValue::DoubleArray(vec![
@@ -1286,7 +1388,7 @@ fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
             0.0,
             0.0,
             0.0,
-            (-theta).to_degrees(),
+            (PI - theta).to_degrees(),
         ]),
         1_000,
         std::time::Instant::now(),
@@ -1303,7 +1405,7 @@ fn red_alliance_heading_mirrors_exactly_like_blue_at_minus_theta() {
     // The mirror identity.
     assert_eq!(
         red_dots, blue_mirrored_dots,
-        "red @ θ must equal blue @ −θ (position mirrored)"
+        "red @ θ must equal blue @ π − θ (position mirrored)"
     );
     // And it must be discriminative: the un-mirrored blue scene differs.
     assert_ne!(

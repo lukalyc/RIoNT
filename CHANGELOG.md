@@ -17,6 +17,15 @@ it by `scripts/release.sh` when the batch is ready to ship.
   View on Active Card` in the command palette now works both ways too, and
   collapsed topics persist in `config.json` (`field.disable_pose_topics`).
 
+### Fixed
+
+- **Field visualization robot heading now matches WPILib / AdvantageScope.**
+  Previously, headings were rotated 90° clockwise (`0°` pointed north, `90°`
+  pointed east, `180°` pointed south) because `(sin θ, cos θ)` was used
+  instead of `(cos θ, sin θ)`. Headings now point east at `0°` (toward the red
+  alliance wall), north at `90°`, west at `180°`, and south at `-90°`, with
+  matching swerve module vectors and red-alliance mirroring (`π − θ`).
+
 ## [0.9.0] - 2026-11-19
 
 ### Added

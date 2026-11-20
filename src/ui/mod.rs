@@ -1510,15 +1510,18 @@ fn paint_field_canvas(f: &mut Frame, area: Rect, app: &App, members: &[FieldMemb
             }
             for m in members {
                 if let Some(r) = &m.reading {
-                    // Mirror the heading with the position. The glyph's
-                    // heading unit vector is (sin θ, cos θ) — f64::sin_cos
-                    // returns (sin, cos) — so mirroring x → length − x
-                    // negates it: the mirrored heading is −θ, and red view
-                    // at stored heading θ must render EXACTLY like blue
-                    // view at −θ (with the position mirrored). NOTE: with
-                    // a (cos θ, sin θ) convention this would be π − θ; the
-                    // π−θ form here would point the arrow backwards.
-                    let rad = if red { -r.radians } else { r.radians };
+                    // Mirror the heading with the position. In WPILib field
+                    // coordinates the heading unit vector is (cos θ, sin θ)
+                    // (0° = East/+x, 90° = North/+y CCW, 180° = West/-x), so
+                    // mirroring x → length − x negates cos θ while preserving
+                    // sin θ: the mirrored heading is π − θ, and red view at
+                    // stored heading θ renders identically to blue view at
+                    // π − θ (with the position mirrored).
+                    let rad = if red {
+                        std::f64::consts::PI - r.radians
+                    } else {
+                        r.radians
+                    };
                     draw_robot(
                         ctx,
                         (fx(r.x), r.y),
@@ -1597,8 +1600,8 @@ pub(crate) fn draw_robot_style(
     wid: f64,
     style: &str,
 ) {
-    let (hdx, hdy) = rad.sin_cos(); // heading unit vector
-    let (pdx, pdy) = (-hdy, hdx); // perpendicular (across the robot)
+    let (hdx, hdy) = (rad.cos(), rad.sin()); // WPILib heading: 0° = +x (East), 90° = +y (North)
+    let (pdx, pdy) = (-hdy, hdx); // left-perpendicular (+90° CCW) across the robot
                                   // Point at (forward fl, across fw) meters from the center.
     let at = |fl: f64, fw: f64| (c.0 + hdx * fl + pdx * fw, c.1 + hdy * fl + pdy * fw);
     let seg = |ctx: &mut ratatui::widgets::canvas::Context, a: (f64, f64), b: (f64, f64)| {
@@ -1747,9 +1750,9 @@ fn swerve_vector_segments(
     wid: f64,
     mirror: bool,
 ) -> Vec<((f64, f64), (f64, f64))> {
-    let (hdx, hdy) = rad.sin_cos(); // (already mirrored) heading unit vector
-                                    // Perpendicular across the robot; under the x-mirror the left/right
-                                    // sides swap, so the axis flips sign.
+    let (hdx, hdy) = (rad.cos(), rad.sin()); // (already mirrored) heading unit vector
+                                             // Perpendicular across the robot; under the x-mirror the left/right
+                                             // sides swap, so the axis flips sign.
     let (pdx, pdy) = if mirror { (hdy, -hdx) } else { (-hdy, hdx) };
     let at = |fl: f64, fw: f64| (c.0 + hdx * fl + pdx * fw, c.1 + hdy * fl + pdy * fw);
     // WPILib module order FL, FR, RL, RR mapped onto the footprint
@@ -1767,7 +1770,7 @@ fn swerve_vector_segments(
         .map(|(corner, (angle, speed))| {
             let vlen = (speed.abs() * SWERVE_VEC_SCALE).clamp(SWERVE_VEC_FLOOR_MPS, SWERVE_VEC_MAX);
             let dir = if mirror { rad - angle } else { rad + angle };
-            let (ddx, ddy) = dir.sin_cos();
+            let (ddx, ddy) = (dir.cos(), dir.sin());
             (*corner, (corner.0 + ddx * vlen, corner.1 + ddy * vlen))
         })
         .collect()
@@ -2457,9 +2460,9 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 mod tests {
     /// The swerve-vector mirror identity: rendering the SAME robot (same
     /// module states, same order) in red view — mirrored position,
-    /// mirrored heading −θ (the glyph heading unit vector is
-    /// (sin θ, cos θ) — f64::sin_cos returns (sin, cos) — which x-mirroring
-    /// negates), `mirror = true` — must place each vector segment at the
+    /// mirrored heading π − θ (the WPILib heading unit vector is
+    /// (cos θ, sin θ), whose x-mirror is (-cos θ, sin θ) = (cos(π − θ), sin(π − θ))),
+    /// `mirror = true` — must place each vector segment at the
     /// x-mirror of the blue-view segment at (x, y, θ). Exact
     /// real-coordinate check; the Canvas rasterizer's ±1-dot floor
     /// asymmetry is a display artifact, not geometry.
@@ -2476,8 +2479,8 @@ mod tests {
         assert_eq!(blue.len(), 3);
 
         // Red view of the SAME robot: the renderer passes the mirrored
-        // position and the mirrored heading −θ with mirror = true.
-        let red = swerve_vector_segments((length - x, y), -theta, &modules, 0.9, 0.9, true);
+        // position and the mirrored heading π − θ with mirror = true.
+        let red = swerve_vector_segments((length - x, y), PI - theta, &modules, 0.9, 0.9, true);
         assert_eq!(red.len(), blue.len());
         for ((b1, b2), (r1, r2)) in blue.iter().zip(&red) {
             assert!((length - r1.0 - b1.0).abs() < 1e-9, "{b1:?} vs {r1:?}");
@@ -2485,6 +2488,32 @@ mod tests {
             assert!((length - r2.0 - b2.0).abs() < 1e-9, "{b2:?} vs {r2:?}");
             assert!((r2.1 - b2.1).abs() < 1e-9, "{b2:?} vs {r2:?}");
         }
+    }
+
+    #[test]
+    fn swerve_vector_cardinal_directions_match_wpilib() {
+        use super::swerve_vector_segments;
+        use std::f64::consts::FRAC_PI_2;
+        use std::f64::consts::PI;
+        let vec_dir = |heading_rad: f64, mod_rad: f64| -> (f64, f64) {
+            let segs =
+                swerve_vector_segments((5.0, 4.0), heading_rad, &[(mod_rad, 2.0)], 0.9, 0.9, false);
+            assert_eq!(segs.len(), 1);
+            let (a, b) = segs[0];
+            (b.0 - a.0, b.1 - a.1)
+        };
+        // 0° robot facing East (+x), straight module -> +x.
+        let (dx, dy) = vec_dir(0.0, 0.0);
+        assert!(dx > 0.0 && dy.abs() < 1e-9, "0°: ({dx}, {dy})");
+        // 90° robot facing North (+y), straight module -> +y.
+        let (dx, dy) = vec_dir(FRAC_PI_2, 0.0);
+        assert!(dx.abs() < 1e-9 && dy > 0.0, "90°: ({dx}, {dy})");
+        // 180° robot facing West (-x), straight module -> -x.
+        let (dx, dy) = vec_dir(PI, 0.0);
+        assert!(dx < 0.0 && dy.abs() < 1e-9, "180°: ({dx}, {dy})");
+        // 0° robot with +90° (CCW left) module steer -> +y.
+        let (dx, dy) = vec_dir(0.0, FRAC_PI_2);
+        assert!(dx.abs() < 1e-9 && dy > 0.0, "0° + 90° mod: ({dx}, {dy})");
     }
 
     /// The offline animation must be a repeating 0→3-dot loop — not a
