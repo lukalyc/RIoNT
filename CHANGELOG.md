@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-19
+
 ### Added
 
 - **Collapse any field card into a compact numeric card (`v`).** Press `v`
