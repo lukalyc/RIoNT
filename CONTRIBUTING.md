@@ -33,7 +33,7 @@ src/config.rs        ~/.config/riont/config.json: targets, presets, SSH settings
 src/ops.rs           Product-side background ops (SSH robot-code restart).
 src/ui/mod.rs        Layout: HUD (with preset bar), tree, inspect dock, watchlist card matrix, overlays.
 src/ui/tree.rs       Collapsible topic tree model (rebuilt per frame).
-scripts/             release.sh, screenshot.py, fetch_field.py (season maps)
+scripts/             release.sh, package.py, install.ps1, install.sh, screenshot.py, fetch_field.py
 test/                E2E contract harness + fake-robot NT4 server
 ```
 
@@ -68,11 +68,11 @@ timeout.
 Two tiers, run the fast one first:
 
 ```
-cargo test                                       # tier 1: in-process, milliseconds
+cargo test --workspace                           # tier 1: in-process, milliseconds
 conda run -n nt-tui-test python test/harness.py  # tier 2: end-to-end contract harness
 ```
 
-**Tier 1 (`cargo test`)** — logic and rendering, fully hermetic:
+**Tier 1 (`cargo test --workspace`)** — logic and rendering, fully hermetic:
 `src/tests_tui.rs` drives keystrokes through `App::handle_key`, feeds NT
 values through `App::apply_values`, renders into a ratatui `TestBackend`,
 and asserts on the buffer — publish commands, toasts, tree/palette/picker
@@ -142,14 +142,16 @@ Versions identify releases, not commits:
 - Cut a release with `scripts/release.sh <patch|minor|major> "summary"` —
   it rotates `[Unreleased]` into the new version, bumps `Cargo.toml`, and
   tags `vX.Y.Z`.
-- `git push --follow-tags` makes CI build Windows/Linux/macOS binaries and
-  attach them to the GitHub release. If the release workflow doesn't
+- `git push --follow-tags` makes CI build, package, and verify
+  Windows/Linux/macOS archives (`scripts/package.py`) plus `SHA256SUMS.txt`,
+  and attach them to the GitHub release. If the release workflow doesn't
   appear within a minute, re-push the tag alone (`git push origin vX.Y.Z`)
   — a combined branch+tag push can drop the tag event.
 
 CI (`.github/workflows/ci.yml`) runs rustfmt + clippy (warnings denied),
-`cargo test` on three OSes, and the E2E harness on every push/PR. Run
-`cargo fmt` and `cargo clippy --all-targets` before pushing.
+`cargo test --workspace` and archive verification on three OSes, and the
+E2E harness on every push/PR. Run `cargo fmt` and
+`cargo clippy --workspace --all-targets` before pushing.
 
 **Zero-warning rule: RIONT must not be committed if the build has
 warnings.** A `cargo build` that emits warnings (unused variables,

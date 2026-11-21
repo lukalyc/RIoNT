@@ -50,10 +50,12 @@ Run `scripts/release.sh <patch|minor|major|x.y.z> "summary line"`. It:
    refreshes `Cargo.lock`, updates the README headline/mockup version.
 4. Commits as `Version X.Y.Z: <summary>`, tags `vX.Y.Z`.
 
-Then `git push --follow-tags` — CI builds and attaches Windows/Linux/
-macOS release binaries to the GitHub release (`.github/workflows/
-release.yml`). The tagged commit is the binary people run; the HUD
-version on any screenshot therefore identifies its exact release.
+Then `git push --follow-tags` — CI builds Windows (static CRT)/Linux/macOS
+release binaries, packages and verifies each archive with
+`scripts/package.py`, generates `SHA256SUMS.txt`, and attaches them to
+the GitHub release (`.github/workflows/release.yml`). The tagged commit is
+the binary people run; the HUD version on any screenshot therefore
+identifies its exact release.
 
 ### Agent invocation (non-interactive)
 
@@ -73,17 +75,18 @@ refused.
 
 Run BOTH test tiers (see "Testing workflow" below):
 
-- `cargo test` — in-process tests must pass; the
-  `hud_online_shows_link_runtime_and_cargo_version` test enforces
-  that the HUD matches `Cargo.toml` (read dynamically — no hardcoded
-  string to update anywhere).
+- `cargo test --workspace` — in-process tests across all workspace crates
+  must pass; the `hud_online_shows_link_runtime_and_cargo_version` test
+  enforces that the HUD matches `Cargo.toml` (read dynamically — no
+  hardcoded string to update anywhere).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clippy clean.
 - `cargo build`, then `python test/harness.py` — the end-to-end contract
   harness (auto-builds if the binary is stale; fail-fast with a full-screen
   dump on the first failure).
 
 **Zero-warning rule: RIONT must not be committed if the build has
-warnings.** `cargo build` (and `cargo test`) must complete with no
-compiler warnings — warnings are errors-in-waiting and hide real
+warnings.** `cargo build` (and `cargo test --workspace`) must complete with
+no compiler warnings — warnings are errors-in-waiting and hide real
 regressions in their noise. CI denies clippy warnings; the same standard
 applies to plain builds before every commit. Fix or `#[allow(...)]` with
 a comment explaining why — never leave a warning for "later".
@@ -93,7 +96,7 @@ a comment explaining why — never leave a warning for "later".
 The test pyramid has two tiers. Choosing the right one is the difference
 between seconds and minutes of feedback:
 
-1. **`cargo test` FIRST, always.** Logic, state and rendering are covered
+1. **`cargo test --workspace` FIRST, always.** Logic, state and rendering are covered
    in-process (unit tests in `pose.rs`/`store.rs`/`field.rs`/`config.rs`,
    full-TUI tests in `src/tests_tui.rs` using a TestBackend). Milliseconds,
    deterministic, hermetic. Most bugs are found and fixed here.

@@ -14,3 +14,6 @@ __pycache__/
 stage/
 dist/
 test/probe-v3-config.json
+
+# my personal notes folder
+/.notes/

@@ -24,20 +24,51 @@ jobs:
       - name: rustfmt
         run: cargo fmt --check
       - name: clippy (warnings are errors)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: ".exe" }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     ext: "" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: in-process tests (unit + TestBackend TUI)
-        run: cargo test
+        run: cargo test --workspace
+      - name: build and verify archive packaging
+        shell: bash
+        run: |
+          cargo build
+          VERSION=$(python -c "import re; print(re.search(r'^version\s*=\s*\"([^\"]+)\"', open('Cargo.toml').read(), re.M).group(1))")
+          python scripts/package.py \
+            --version "$VERSION" \
+            --target "${{ matrix.target }}" \
+            --binary "target/debug/riont${{ matrix.ext }}" \
+            --out-dir dist-ci
+      - name: verify shell scripts syntax
+        if: runner.os != 'Windows'
+        run: |
+          sh -n scripts/install.sh
+          bash -n scripts/release.sh
+      - name: verify PowerShell installer syntax
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile("scripts/install.ps1", [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
 
   e2e:
     # End-to-end contract harness: the real binary against a real ntcore

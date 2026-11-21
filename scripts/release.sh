@@ -15,9 +15,9 @@
 #      non-empty [Unreleased] section in CHANGELOG.md.
 #   2. Rotates "## [Unreleased]" -> "## [X.Y.Z] - <today>" (plus a fresh
 #      empty Unreleased section) and bumps Cargo.toml.
-#   3. Updates the README headline + ASCII-mockup HUD version strings.
-#   4. cargo build (refreshes Cargo.lock, proves the tree compiles) and
-#      cargo test.
+#   3. Updates the README headline + ASCII-mockup HUD version strings (if present).
+#   4. cargo build --workspace (refreshes Cargo.lock, checks zero warnings)
+#      and cargo test --workspace.
 #   5. Commits "Version X.Y.Z: <summary>" and tags vX.Y.Z.
 #
 # Nothing is pushed. Finish with: git push --follow-tags
@@ -94,10 +94,13 @@ if git rev-parse "v$NEW" >/dev/null 2>&1 || git ls-remote --tags origin "v$NEW" 
   exit 1
 fi
 
+PYTHON=$(command -v python3 || command -v python || true)
+[[ -n "$PYTHON" ]] || { echo "ERROR: python3 or python is required." >&2; exit 1; }
+
 TODAY=$(date +%F)
 
 echo "release: $OLD -> $NEW  ($SUMMARY)"
-awk '/^## \[Unreleased\]/{f=1} /^## / && !f{exit} f' CHANGELOG.md | grep -Ev '^\s*$' \
+awk '/^## \[Unreleased\]/{f=1; print; next} /^## /{if (f) exit} f' CHANGELOG.md | grep -Ev '^\s*$' \
   | sed 's/^/    | /'
 
 if [[ "$DRY_RUN" == yes ]]; then
@@ -110,35 +113,50 @@ if [[ "$ASSUME_YES" != yes ]]; then
   [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "aborted."; exit 1; }
 fi
 
-# --- rotate the changelog --------------------------------------------------
+# --- rotate the changelog, bump Cargo.toml, update README version ----------
 
-python3 - "$NEW" "$TODAY" <<'PYEOF'
+"$PYTHON" - "$OLD" "$NEW" "$TODAY" <<'PYEOF'
 import re, sys
-new, today = sys.argv[1], sys.argv[2]
-s = open("CHANGELOG.md").read()
+
+old, new, today = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open("CHANGELOG.md", encoding="utf-8", newline="") as fh:
+    cl = fh.read()
+nl = "\r\n" if "\r\n" in cl else "\n"
 rotated = f"## [{new}] - {today}"
-s = s.replace("## [Unreleased]", f"## [Unreleased]\n\n_Nothing yet — see the latest release notes above._\n\n{rotated}", 1)
-# Drop the placeholder if the fresh Unreleased stays empty (it does right
-# after rotation): keep the section header but no filler text.
-s = s.replace(f"## [Unreleased]\n\n_Nothing yet — see the latest release notes above._\n\n{rotated}",
-              f"## [Unreleased]\n\n{rotated}")
-open("CHANGELOG.md", "w").write(s)
+cl_new = cl.replace("## [Unreleased]", f"## [Unreleased]{nl}{nl}{rotated}", 1)
+if cl_new == cl:
+    sys.exit("ERROR: failed to rotate ## [Unreleased] in CHANGELOG.md")
+with open("CHANGELOG.md", "w", encoding="utf-8", newline="") as fh:
+    fh.write(cl_new)
+
+with open("Cargo.toml", encoding="utf-8", newline="") as fh:
+    cargo = fh.read()
+cargo_new, n = re.subn(
+    rf'(?m)^(version\s*=\s*"){re.escape(old)}(")$',
+    rf"\g<1>{new}\g<2>",
+    cargo,
+    count=1,
+)
+if n != 1:
+    sys.exit(f"ERROR: failed to bump version {old} -> {new} in Cargo.toml")
+with open("Cargo.toml", "w", encoding="utf-8", newline="") as fh:
+    fh.write(cargo_new)
+
+with open("README.md", encoding="utf-8", newline="") as fh:
+    readme = fh.read()
+readme_new = readme.replace(f"RIONT v{old}", f"RIONT v{new}")
+if readme_new != readme:
+    with open("README.md", "w", encoding="utf-8", newline="") as fh:
+        fh.write(readme_new)
 PYEOF
-
-# --- bump Cargo.toml -------------------------------------------------------
-
-sed -i "0,/^version = \"$OLD\"/s//version = \"$NEW\"/" Cargo.toml
-
-# --- README version strings (headline/mockup use the RELEASED version) ----
-
-sed -i "s/RIONT v$OLD/RIONT v$NEW/g" README.md
 
 # --- build, test -----------------------------------------------------------
 
-echo "--- cargo build (refresh Cargo.lock) ---"
-cargo build --quiet
-echo "--- cargo test ---"
-cargo test --quiet 2>&1 | tail -2
+echo "--- cargo build --workspace (refresh Cargo.lock) ---"
+cargo build --workspace
+echo "--- cargo test --workspace ---"
+cargo test --workspace
 
 # --- commit + tag ----------------------------------------------------------
 

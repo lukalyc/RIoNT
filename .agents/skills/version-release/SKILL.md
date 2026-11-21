@@ -47,8 +47,8 @@ The script (idempotent, safe to inspect before pushing):
 1. Rotates `## [Unreleased]` → `## [X.Y.Z] - <today>` and inserts a fresh
    empty `## [Unreleased]`.
 2. Bumps `Cargo.toml`, refreshes `Cargo.lock`.
-3. Updates the README headline/ASCII-mockup HUD version string.
-4. Runs `cargo build` (refreshes the lockfile, proves the tree compiles).
+3. Updates the README headline/ASCII-mockup HUD version string (if present).
+4. Runs `cargo build --workspace` and `cargo test --workspace` (refreshes the lockfile, proves the tree compiles and passes all tests with zero warnings).
 5. Commits as `Version X.Y.Z: <summary>` and tags `vX.Y.Z`.
 
 ## Step 3 — Push and let CI build the binaries
@@ -57,14 +57,16 @@ The script (idempotent, safe to inspect before pushing):
 git push --follow-tags
 ```
 
-`.github/workflows/release.yml` fires on `v*` tags: it builds Windows,
-Linux and macOS release binaries, packages each with README + CHANGELOG,
-and attaches them to the GitHub Release for the tag. Teammates download
-from the release page — no Rust toolchain required.
+`.github/workflows/release.yml` fires on `v*` tags: it builds Windows
+(static CRT), Linux and macOS release binaries, packages and verifies each
+archive via `scripts/package.py` (README + CHANGELOG + LICENSE), generates
+`SHA256SUMS.txt`, and attaches them to the GitHub Release for the tag.
+Teammates install via `scripts/install.ps1` / `scripts/install.sh` or from
+the release page — no Rust toolchain required.
 
 ## Step 4 — Verify
 
-1. `cargo test` — the `hud_online_shows_link_runtime_and_cargo_version`
+1. `cargo test --workspace` — the `hud_online_shows_link_runtime_and_cargo_version`
    test proves the HUD shows the new version (dynamic compare, nothing to
    hand-edit).
 2. `conda run -n nt-tui-test python test/harness.py` — all contract
@@ -75,8 +77,8 @@ from the release page — no Rust toolchain required.
    Regenerate the README hero images:
    `conda run -n nt-tui-test python scripts/screenshot.py` — the mockups
    must show the HUD this release actually ships.
-5. After the push: the GitHub release page shows the binaries and the
-   CHANGELOG body.
+5. After the push: the GitHub release page shows all four platform archives,
+   `SHA256SUMS.txt`, and the CHANGELOG body + install commands.
 
 ## Common mistakes seen in this repo
 

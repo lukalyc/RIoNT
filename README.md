@@ -6,44 +6,72 @@ A keyboard-only NetworkTables (NT4) dashboard for FRC. Rust + ratatui. Pronounce
 
 ## Features
 
-- **Topic tree** — collapsible namespaces with inline values, type tags and
-  publish rates; fuzzy search with `/` jumps straight to a topic.
-- **Inspector dock (`INSPECT`)** — passively mirrors the cursor's full path,
-  type, flags, rate, Δ and raw value. No navigation needed to read metadata.
-- **Watchlist** — `Space` pins any topic as a live card, sized by type;
-  a directory pin becomes a GROUP: its cards get their own column under
-  a `─ Folder (n) ─` header (n = live topic count), overflowing into
-  further header-topped columns when large. Ungrouped cards pack
-  top-down; columns beyond the pane scroll in with h/l; repacking is
-  live.
-- **Field visualization** — robot pose topics render as a braille top-down
-  field with live position, heading and trail (details below).
-- **Inline editing** — `e` publishes a new bool / int / double / string
-  value over NT4. While offline, edits are queued and sent on reconnect.
-  Every edit is verified by read-back over a second connection; an edit
-  the robot does not hold surfaces a warning.
-- **Command palette** — `:` opens a fuzzy action runner: view/edit
-  settings, manage saved targets, save/load presets, reconnect, restart
-  robot code over SSH, copy a topic path.
-- **Connection picker** — `c` connects to a saved target or any typed
-  address (team number, IP, or IP:port).
-- **Workspace presets** — slots `[1]`–`[9]` sit in the top-right HUD (showing
-  `[N:name]` for the active or hovered slot, with `*` when modified). `1`–`9`
-  loads a slot immediately and `u` restores the previous view; `p` focuses the
-  preset bar to browse (`j`/`k`), save/overwrite (`Space`), load (`Enter`),
-  rename (`r`), or clear (`x`) slots in `config.json`. A trailing `/*` pins a
-  whole subtree and adopts topics the robot starts publishing later.
-- **Driver-station HUD** — link state (`CONNECTED (address)`, or a red
-  `DISCONNECTED` whose dots march while RIONT retries, next to the
-  address it is retrying) and `RUNTIME` (how long the current connection
-  has been up; freezes on disconnect, restarts from zero on reconnect).
-  No RTT, no global Hz, no attempt counter, no robot-code indicator: the
-  animation is the retry signal, and a dropped link is silent (RIONT
-  reconnects on its own).
-- **Telemetry neutrality** — rates and deltas render in muted grey; no
-  stale flags, no alarms. Slow-but-alive topics are normal.
-- **Resilience** — auto-reconnects forever; the watchlist persists across
-  restarts and crashes.
+- **Topic tree**
+- **Inspector dock (`INSPECT`)**
+- **Watchlist**
+- **Field visualization**
+- **Inline topic editing**
+- **Command palette**
+- **Topic presets**
+
+## Installation
+
+No Rust toolchain is needed to run RIONT.
+
+### Quick install (recommended)
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/lukalyc/RIoNT/master/scripts/install.ps1 | iex
+```
+
+**macOS / Linux:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lukalyc/RIoNT/master/scripts/install.sh | sh
+```
+
+The installer downloads the latest release from [GitHub Releases](https://github.com/lukalyc/RIoNT/releases/latest), verifies its SHA256 checksum, installs `riont` (`%LOCALAPPDATA%\riont\bin` on Windows; `~/.local/bin` on macOS/Linux), and adds it to your `PATH` (no admin/sudo required).
+
+Open a **new** terminal and verify:
+
+```sh
+riont --version
+riont
+```
+
+### Manual install (from GitHub Releases)
+
+Download the matching archive from [GitHub Releases](https://github.com/lukalyc/RIoNT/releases/latest):
+
+- **Windows** (`riont-<version>-x86_64-pc-windows-msvc.zip`):
+  1. Right-click the `.zip` file → **Extract All...**.
+  2. Move `riont.exe` into `%LOCALAPPDATA%\riont\bin` (create the folder if needed).
+  3. Press `Win`, search **Edit environment variables for your account**, select **Path** under *User variables* → **Edit** → **New**, and add `%LOCALAPPDATA%\riont\bin` → **OK**.
+  4. Open a **new** terminal (Windows Terminal, PowerShell, or Command Prompt) and run `riont`.
+- **macOS** (`riont-<version>-aarch64-apple-darwin.tar.gz` for Apple Silicon, or `riont-<version>-x86_64-apple-darwin.tar.gz` for Intel):
+  ```sh
+  tar -xzf ~/Downloads/riont-*-apple-darwin.tar.gz
+  mkdir -p ~/.local/bin
+  mv riont-*/riont ~/.local/bin/riont
+  chmod +x ~/.local/bin/riont
+  xattr -d com.apple.quarantine ~/.local/bin/riont 2>/dev/null || true
+  grep -qF '$HOME/.local/bin' ~/.zshrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+  ```
+  Open a **new** Terminal window and run `riont`.
+- **Linux** (`riont-<version>-x86_64-linux-gnu.tar.gz`):
+  ```sh
+  tar -xzf ~/Downloads/riont-*-x86_64-linux-gnu.tar.gz
+  install -Dm755 riont-*/riont ~/.local/bin/riont
+  ```
+  If `~/.local/bin` is not already on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` (or your shell profile), then open a **new** terminal and run `riont`.
+
+### Update, uninstall & source builds
+
+- **Update:** re-run the quick install command above.
+- **Uninstall:** delete `%LOCALAPPDATA%\riont\bin\riont.exe` (Windows) or `~/.local/bin/riont` (macOS/Linux).
+- **From source (requires Rust):** `cargo install --git https://github.com/lukalyc/RIoNT.git` (or see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Keymap
 
@@ -84,10 +112,7 @@ A pinned topic whose value is a robot pose renders as a braille top-down
 field with a live robot marker and a pose trail. The robot is drawn as a
 rectangle footprint with a center orientation arrow (inside the frame);
 the footprint size comes from `config.json` (`field.robot_length_m` /
-`field.robot_width_m`, meters, defaults 0.9 × 0.9). Small cards adapt:
-the full rectangle+arrow is drawn while it spans enough braille dots to
-read, then a rect+tick, then a compact chevron — always keeping position
-and heading accurate.
+`field.robot_width_m`, meters, defaults 0.9 × 0.9).
 
 - **Auto-detected, conservatively:** only exact Limelight pose topics
   (`botpose`, `botpose_wpiblue`, `botpose_wpired`, `botpose_orb_*`, any
@@ -103,8 +128,8 @@ and heading accurate.
   field cards into ONE composite card — compare odometry against a vision
   estimate on a single field, with a per-topic legend. `o` again unmerges.
 - **Alliance color** follows the exact `FMSInfo/IsRedAlliance` topic
-  (neutral cyan without FMS); flipping the field geometry is a deliberate
-  user setting (`Field: Set Alliance Red/Blue`), never automatic.
+  (neutral cyan if topic not found). Flipping the field geometry is done via
+  user setting (`Field: Set Alliance Red/Blue`).
 
 ## Usage
 
@@ -122,7 +147,7 @@ launch. Retarget mid-session with `c`.
 ## Settings & persistence
 
 Everything lives in `~/.config/riont/config.json` (override the path with
-the `RIONT_CONFIG` environment variable — useful for portable installs):
+the `RIONT_CONFIG` environment variable):
 
 ```json
 {
@@ -152,9 +177,8 @@ team repo so everyone gets the same views. The live watchlist persists to
 
 ## Development & releases
 
-- **Tests:** `cargo test` (in-process, milliseconds) and
-  `python test/harness.py` (end-to-end contract harness). CI runs both on
-  every push/PR, on Linux, Windows and macOS.
+- **Tests:** `cargo test --workspace` (in-process) and
+  `python test/harness.py` (end-to-end contract harness).
 - **Changelog:** user-visible changes add a bullet under `## [Unreleased]`
   in `CHANGELOG.md` in the same commit. Versions move only at release time.
 - **Cutting a release:** `scripts/release.sh <patch|minor|major> "summary"`,

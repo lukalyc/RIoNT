@@ -7,12 +7,13 @@
 //! Maps come from three sources, in priority order:
 //!   1. `config.field.walls_file` — external JSON (PathPlanner format),
 //!      THE path for new seasons: drop in the official file, no rebuild.
-//!   2. `config.field.map` — a built-in map name (see BUILTIN_MAPS).
-//!   3. The default built-in (`2026-rebuilt`).
+//!   2. `fields/<map>.json` next to the launch directory — overrides built-ins.
+//!   3. `config.field.map` — a built-in map embedded from `fields/*.json`
+//!      (default `2026-rebuilt`), so standalone binaries render full geometry
+//!      from any working directory.
 //!
-//! BUILT-IN interior obstacles are APPROXIMATIONS (see each const). The
-//! perimeter is exact. Official geometry arrives via `scripts/fetch_field.py`
-//! + `walls_file`; a season swap should never require editing this file.
+//! Official geometry arrives via `scripts/fetch_field.py` + `walls_file`;
+//! a season swap should never require editing this file.
 //!
 //! Alliance flip is RENDERING-ONLY and USER-DRIVEN: the app never infers
 //! an alliance. When the user sets `config.field.alliance = "red"` via
@@ -41,71 +42,9 @@ pub struct FieldMap {
 /// Built-in maps, in cycle order (palette `Field: Cycle Map`).
 pub const BUILTIN_MAPS: [&str; 3] = ["2024-crescendo", "2025-reefscape", "2026-rebuilt"];
 
-/// 2024 CRESCENDO: 16.54 x 8.21 m. Perimeter exact; subwoofer/amp/stage
-/// are approximations pending official PathPlanner geometry.
-const CRESCENDO_WALLS: &[&[(f64, f64)]] = &[
-    // Perimeter (exact).
-    &[
-        (0.0, 0.0),
-        (16.54, 0.0),
-        (16.54, 8.21),
-        (0.0, 8.21),
-        (0.0, 0.0),
-    ],
-    // Subwoofer: protrusion on the blue driver-station wall (approx).
-    &[(0.0, 2.9), (1.2, 2.9), (1.2, 5.3), (0.0, 5.3)],
-    // Amp: corner structure, blue-left (approx).
-    &[(0.0, 6.6), (1.2, 6.6), (1.2, 8.21), (0.0, 8.21)],
-    // Stage: center scoring structure (approx hexagon).
-    &[
-        (6.1 + 1.0, 4.105),
-        (6.1 + 0.5, 4.105 + 0.87),
-        (6.1 - 0.5, 4.105 + 0.87),
-        (6.1 - 1.0, 4.105),
-        (6.1 - 0.5, 4.105 - 0.87),
-        (6.1 + 0.5, 4.105 - 0.87),
-        (6.1 + 1.0, 4.105),
-    ],
-];
-
-/// 2025 REEFSCAPE: 16.54 x 8.21 m. Perimeter exact; reef/processor/cage
-/// posts are approximations pending official PathPlanner geometry.
-const REEFSCAPE_WALLS: &[&[(f64, f64)]] = &[
-    // Perimeter (exact).
-    &[
-        (0.0, 0.0),
-        (16.54, 0.0),
-        (16.54, 8.21),
-        (0.0, 8.21),
-        (0.0, 0.0),
-    ],
-    // Reef: hexagonal scoring structure at field center (approx).
-    &[
-        (8.27 + 1.10, 4.105),
-        (8.27 + 0.55, 4.105 + 0.953),
-        (8.27 - 0.55, 4.105 + 0.953),
-        (8.27 - 1.10, 4.105),
-        (8.27 - 0.55, 4.105 - 0.953),
-        (8.27 + 0.55, 4.105 - 0.953),
-        (8.27 + 1.10, 4.105),
-    ],
-    // Processor: wall station on the blue half (approx).
-    &[(3.0, 0.0), (3.0, 0.8), (4.2, 0.8), (4.2, 0.0)],
-    // Cage posts near each driver-station wall (approx).
-    &[(1.2, 3.4), (1.2, 4.8)],
-    &[(15.34, 3.4), (15.34, 4.8)],
-];
-
-/// 2026 season: the official map ships as fields/2026-rebuilt.json
-/// (generated from Choreo's vector drawing by scripts/fetch_field.py).
-/// This perimeter-only const is the fallback when that file is absent.
-const TBA_2026_WALLS: &[&[(f64, f64)]] = &[&[
-    (0.0, 0.0),
-    (16.54, 0.0),
-    (16.54, 8.21),
-    (0.0, 8.21),
-    (0.0, 0.0),
-]];
+const BUILTIN_2024_JSON: &str = include_str!("../../../fields/2024-crescendo.json");
+const BUILTIN_2025_JSON: &str = include_str!("../../../fields/2025-reefscape.json");
+const BUILTIN_2026_JSON: &str = include_str!("../../../fields/2026-rebuilt.json");
 
 /// PathPlanner-style field JSON:
 /// `{ "game": "...", "fieldLength": m, "fieldWidth": m,
@@ -128,20 +67,13 @@ struct FieldJson {
 
 impl FieldMap {
     pub fn builtin(name: &str) -> Option<FieldMap> {
-        let (length_m, width_m, walls) = match name {
-            "2024-crescendo" => (16.54, 8.21, CRESCENDO_WALLS),
-            "2025-reefscape" => (16.54, 8.21, REEFSCAPE_WALLS),
-            "2026-rebuilt" => (16.541, 8.0692, TBA_2026_WALLS),
+        let json = match name {
+            "2024-crescendo" => BUILTIN_2024_JSON,
+            "2025-reefscape" => BUILTIN_2025_JSON,
+            "2026-rebuilt" => BUILTIN_2026_JSON,
             _ => return None,
         };
-        Some(FieldMap {
-            name: name.to_string(),
-            game: name.to_string(),
-            length_m,
-            width_m,
-            walls: walls.iter().map(|p| p.to_vec()).collect(),
-            marks: Vec::new(),
-        })
+        Some(FieldMap::from_json(json, name).expect("embedded field map JSON is valid"))
     }
 
     /// Parse a field JSON (PathPlanner format). Rejects garbage rather
@@ -201,7 +133,7 @@ pub struct FieldSettingsRef<'a> {
 /// 1. `walls_file` (explicit external JSON)
 /// 2. `fields/<map>.json` next to the launch directory — the drop-in slot
 ///    for generated maps (scripts/fetch_field.py)
-/// 3. the built-in const for that name (documented approximations)
+/// 3. the embedded map JSON for that name (from `fields/*.json`)
 pub fn resolve(settings: FieldSettingsRef) -> (FieldMap, Option<String>) {
     let walls_file = settings.walls_file.unwrap_or("");
     if !walls_file.is_empty() {
@@ -225,9 +157,9 @@ pub fn resolve(settings: FieldSettingsRef) -> (FieldMap, Option<String>) {
     (builtin_map(settings.map), None)
 }
 
-/// The built-in map selected by `config.field.map` (default REEFSCAPE
-/// when the name is unknown). Does NOT consider walls_file — that is
-/// resolve()'s job.
+/// The built-in map selected by `config.field.map` (default `2026-rebuilt`
+/// when the name is unknown). Does NOT consider `walls_file` — that is
+/// `resolve()`'s job.
 fn builtin_map(map: &str) -> FieldMap {
     // Unknown names fall back to the engine default (2026-rebuilt); the
     // default is built in, so this cannot fail.
@@ -351,6 +283,17 @@ mod tests {
             assert!(m.length_m > 1.0 && m.width_m > 1.0);
         }
         assert!(FieldMap::builtin("1992-maize-maze").is_none());
+    }
+
+    #[test]
+    fn builtin_2026_embeds_full_official_geometry() {
+        let m = FieldMap::builtin("2026-rebuilt").expect("2026-rebuilt is built in");
+        assert!(
+            m.walls.len() > 10,
+            "expected full embedded obstacles, got {} walls",
+            m.walls.len()
+        );
+        assert!(!m.marks.is_empty(), "expected embedded field marks");
     }
 
     #[test]

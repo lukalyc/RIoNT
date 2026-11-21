@@ -8,6 +8,29 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+### Added
+
+- **One-command installation & `PATH` setup (`scripts/install.ps1`, `scripts/install.sh`).**
+  Pit laptops on Windows, macOS, and Linux can install the latest release
+  with a single PowerShell or `curl | sh` command, verify `SHA256SUMS.txt`,
+  and immediately run `riont` from any new terminal. See `README.md` for
+  both quick and manual install steps.
+- **Standalone field geometry.** Built-in season maps (`2026-rebuilt`, etc.)
+  are now embedded in the binary so globally installed `riont` renders full
+  field obstacles regardless of the current working directory.
+
+### Fixed
+
+- **Windows release `.zip` archive is now a real ZIP.** Previously, the
+  Windows release workflow invoked MSYS2 GNU `tar -a`, which emitted an
+  uncompressed `.tar` file named `.zip` that Windows Explorer reported as
+  empty and could not extract. Release archives are now built and verified
+  cross-platform via `scripts/package.py` (including Windows
+  `Expand-Archive` extraction checks).
+- **Windows release `riont.exe` statically links the C runtime.** Clean
+  Windows machines no longer require the Microsoft Visual C++
+  Redistributable to run `riont`.
+
 ## [0.9.1] - 2026-11-19
 
 ### Added
