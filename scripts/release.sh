@@ -59,7 +59,14 @@ fi
 
 # --- preconditions ---------------------------------------------------------
 
-[[ -z "$(git status --porcelain)" ]] || { echo "ERROR: working tree is not clean — commit or stash first." >&2; exit 1; }
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ERROR: working tree is not clean — commit or stash first." >&2
+  if grep -qi microsoft /proc/version 2>/dev/null && [[ "$PWD" == /mnt/* ]]; then
+    echo "HINT: You are running WSL bash on a Windows checkout ($PWD)." >&2
+    echo '      Use Git Bash instead: & "C:\Program Files\Git\bin\bash.exe" scripts/release.sh ...' >&2
+  fi
+  exit 1
+fi
 [[ "$(git branch --show-current)" == "master" ]] || { echo "ERROR: releases are cut from master (you are on: $(git branch --show-current))." >&2; exit 1; }
 git fetch origin --quiet
 # origin must be contained in local master: behind is an error (rebase
@@ -94,8 +101,14 @@ if git rev-parse "v$NEW" >/dev/null 2>&1 || git ls-remote --tags origin "v$NEW" 
   exit 1
 fi
 
-PYTHON=$(command -v python3 || command -v python || true)
-[[ -n "$PYTHON" ]] || { echo "ERROR: python3 or python is required." >&2; exit 1; }
+PYTHON=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
+    PYTHON="$cand"
+    break
+  fi
+done
+[[ -n "$PYTHON" ]] || { echo "ERROR: a working Python 3 interpreter (python3 or python) is required." >&2; exit 1; }
 
 TODAY=$(date +%F)
 
