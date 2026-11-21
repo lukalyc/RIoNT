@@ -8,6 +8,8 @@ it by `scripts/release.sh` when the batch is ready to ship.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-21
+
 ### Added
 
 - **One-command installation & `PATH` setup (`scripts/install.ps1`, `scripts/install.sh`).**
